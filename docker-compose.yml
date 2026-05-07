@@ -1,0 +1,33 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: dota
+      POSTGRES_PASSWORD: dota
+      POSTGRES_DB: dota
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dota -d dota"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://dota:dota@db:5432/dota
+      DATA_DIR: /code/data
+    volumes:
+      - ./app:/code/app
+      - ./data:/code/data
+
+volumes:
+  pgdata:
