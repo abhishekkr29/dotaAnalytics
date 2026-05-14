@@ -189,38 +189,20 @@ The DB stores summary rows; disk cache stores full JSON. Snapshots can always be
 
 ## Coach pipeline (Hybrid: rules + LLM)
 
+Architectural shape only — for the full reference (beats schema, prompt design, session memory, tunables, cost details, gotchas), see [COACH.md](COACH.md).
+
 ```
-analyze(match_id) ──► structured findings (JSON)
-                          │
-                          ▼
-                   _build_beats()  ← raw match data (hero comp, patch, rank)
-                          │      heuristic: phase grouping (early/mid/late),
-                          ▼      recurring death patterns, win-prob peaks/troughs
-                   structured "beats"
-                          │
-                          ▼
-                   _build_user_prompt()  →  markdown-ish user message
-                          │
-                          ▼
-              anthropic.Anthropic().messages.create(
-                  model=claude-sonnet-4-6,
-                  system=SYSTEM_PROMPT  (cacheable),
-                  messages=[user_prompt],
-                  cache_control={type: ephemeral}
-              )
-                          │
-                          ▼
-                   markdown coach review
-                          │
-                          ▼
-                   data/reviews/<match_id>.md
+analyze(match_id) → beats (rules) → prompt + injected memory → Claude → markdown review
+                                                                              │
+                                                                              ├─► data/reviews/<id>.md
+                                                                              └─► data/coach_memory.json
 ```
 
-**Design notes:**
-- The LLM never invents events — facts come from `analyze` + raw match data only. The system prompt explicitly forbids made-up references.
-- Default model is **Claude Sonnet 4.6** (`claude-sonnet-4-6`), balancing Dota domain knowledge against cost. `--model haiku|opus` swaps tier.
-- API key is read from `ANTHROPIC_API_KEY` env var (sourced from `.env`, which is gitignored).
-- Prompt caching is requested via top-level `cache_control={"type": "ephemeral"}` — Sonnet 4.6's cache minimum is 2048 input tokens, so at current prompt sizes caching may not activate; the marker is in place for when the prompt grows.
+**Architectural choices:**
+- Rules pin facts, LLM phrases them. System prompt forbids invented events.
+- Default model is Claude Sonnet 4.6. `--model haiku|opus` swaps tier.
+- `ANTHROPIC_API_KEY` from env only; never logged or persisted.
+- Session memory: `data/coach_memory.json` carries the last 20 reviews; the last 5 are injected into each new prompt for recurring-pattern detection.
 
 ## Why this design
 

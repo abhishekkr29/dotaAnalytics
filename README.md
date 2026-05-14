@@ -33,6 +33,7 @@ Postgres comes up automatically (`depends_on` + healthcheck). Schema is bootstra
 
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — system design, module breakdown, data flows, schema, design rationale.
 - **[docs/TRAINING.md](docs/TRAINING.md)** — deep reference for the win-prob model: data sources, full feature schema, label, hyperparams, metrics, retraining triggers, gotchas.
+- **[docs/COACH.md](docs/COACH.md)** — deep reference for the `coach` command: hybrid pipeline, prompt design, session memory schema, model selection, cost, tuning knobs.
 - **[docs/PLANNING.md](docs/PLANNING.md)** — scope, phase plan, validation plan, cost analysis, known limitations, future work.
 - **[docs/API.md](docs/API.md)** — CLI reference, module interfaces, OpenDota endpoints, exit codes.
 
@@ -58,6 +59,7 @@ ANTHROPIC_API_KEY=sk-ant-...   # required only for `coach`; leave blank otherwis
 ├── docs/
 │   ├── ARCHITECTURE.md
 │   ├── TRAINING.md
+│   ├── COACH.md
 │   ├── PLANNING.md
 │   └── API.md
 ├── scripts/

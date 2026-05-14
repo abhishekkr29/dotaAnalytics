@@ -226,6 +226,8 @@ Run the full inference pipeline for one match. Requires:
 
 Generate a natural-language coach review for one match via Claude. Internally runs `analyze()` for the structured findings, gathers raw match context (hero composition, patch, rank), applies heuristic narrative beats (phase grouping + recurring patterns), then asks Claude to write the review.
 
+For prompt design, session memory schema, theme extraction rules, tuning knobs, gotchas, and future work, see [COACH.md](COACH.md).
+
 **Requires:**
 - `ANTHROPIC_API_KEY` in `.env` (the file is gitignored — never commit a key).
 - Same prerequisites as `analyze`: trained model, parsed Turbo match, you in `players[]`.
@@ -252,9 +254,7 @@ Generate a natural-language coach review for one match via Claude. Internally ru
 }
 ```
 
-**Session memory:** every coach run appends a heuristic summary (themes, hero, KDA, result, date) to `data/coach_memory.json`. The last 5 entries are injected into subsequent prompts under a "Recent match history" section, so Claude can spot recurring patterns ("you've died to Pudge 3 games running"). Delete the file to reset.
-
-**Cost:** roughly $0.005–0.03 per call on Sonnet 4.6, depending on match complexity.
+**Session memory + cost details:** see [COACH.md](COACH.md) — schema, retention/injection counts, theme extraction, per-tier cost breakdown.
 
 **Errors:**
 - `ANTHROPIC_API_KEY` unset
