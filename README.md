@@ -1,55 +1,48 @@
 # dotaAnalytics
 
-Personal Dota 2 Turbo decision analyzer. Pulls your match history via OpenDota, trains a turbo-specific win-probability model conditioned on your rank bracket, then ranks the decisions in any single match by their impact on win probability — so you can see which calls helped and which were leaks.
+Personal Dota 2 Turbo decision analyzer. Pulls match data via OpenDota, trains a Turbo-specific win-probability model conditioned on your rank bracket, and ranks the in-game decisions of any single match by their impact on win probability — so you can see which calls helped and which were leaks.
+
+**Status:** CLI-only. Phases 1–3 (ingest, training pipeline, decision scorer) are code-ready. Phase 4 (UI) is deferred until the CLI flow is validated against real matches.
 
 Scope: **Turbo only** (`game_mode = 23`), one user, runs locally via docker compose.
 
-## Architecture
-
-```
-app  (python 3.12)              db  (postgres 16)
-  ├─ CLI: fetch / train / ...     └─ matches, snapshots, decisions
-  └─ later: Streamlit UI on :8501
-
-shared volume: ./data           raw match JSON cache
-```
-
 ## Quick start
 
-Edit `.env` so `ACCOUNT_ID` is your Dota friend code, then:
+Edit `.env` to set your `ACCOUNT_ID` (Dota friend code or 32-bit OpenDota account ID), then:
 
 ```bash
 docker compose build
-docker compose run --rm app python -m app.cli account            # sanity check
-docker compose run --rm app python -m app.cli fetch --limit 50   # start small
+docker compose run --rm app python -m app.cli profile             # cache your rank
+docker compose run --rm app python -m app.cli bracket-fetch --limit 500
+docker compose run --rm app python -m app.cli request-parses --limit 500
+# wait ~15 min; repeat refresh+request across the day until ~500 parsed
+docker compose run --rm app python -m app.cli refresh-parses --limit 500
+docker compose run --rm app python -m app.cli snapshots
+docker compose run --rm app python -m app.cli train
+docker compose run --rm app python -m app.cli analyze <match_id>
+docker compose run --rm app python -m app.cli coach <match_id>     # natural-language review via Claude
 ```
 
-Postgres is started automatically by `depends_on` + healthcheck.
+The `coach` command additionally requires `ANTHROPIC_API_KEY` in `.env` (gitignored — never commit a key).
 
-Inspect what landed:
+A smoke test for the full CLI surface lives at `scripts/smoke.sh` — run it any time to confirm wiring + graceful error paths.
 
-```bash
-docker compose exec db psql -U dota -d dota -c \
-  "SELECT match_id, duration, parsed, avg_rank_tier,
-          your_hero_id, your_kills, your_deaths, your_assists, radiant_win
-   FROM matches ORDER BY start_time DESC LIMIT 10;"
-```
+Postgres comes up automatically (`depends_on` + healthcheck). Schema is bootstrapped on every CLI run.
 
-## CLI
+## Documentation
 
-| Command | What it does |
-|---|---|
-| `python -m app.cli account` | Print the resolved account id |
-| `python -m app.cli fetch --limit N` | Sync your N most recent Turbo matches — DB row + cached JSON per match |
-
-`fetch` is idempotent: cached JSONs are reused, DB rows upserted on `match_id`.
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — system design, module breakdown, data flows, schema, design rationale.
+- **[docs/TRAINING.md](docs/TRAINING.md)** — deep reference for the win-prob model: data sources, full feature schema, label, hyperparams, metrics, retraining triggers, gotchas.
+- **[docs/PLANNING.md](docs/PLANNING.md)** — scope, phase plan, validation plan, cost analysis, known limitations, future work.
+- **[docs/API.md](docs/API.md)** — CLI reference, module interfaces, OpenDota endpoints, exit codes.
 
 ## Configuration
 
-Single `.env` file at the repo root:
+Single `.env` file at the repo root (already in `.gitignore` — secrets stay out of GitHub):
 
 ```
-ACCOUNT_ID=446619601     # your Dota friend code, or 32-bit OpenDota account id
+ACCOUNT_ID=446619601           # your Dota friend code, or 32-bit OpenDota account id
+ANTHROPIC_API_KEY=sk-ant-...   # required only for `coach`; leave blank otherwise
 ```
 
 `docker-compose.yml` injects `DATABASE_URL` and `DATA_DIR` automatically. Outside docker, set them yourself.
@@ -62,32 +55,37 @@ ACCOUNT_ID=446619601     # your Dota friend code, or 32-bit OpenDota account id
 ├── Dockerfile
 ├── requirements.txt
 ├── .env(.example)
-├── db/init.sql            # postgres schema
+├── docs/
+│   ├── ARCHITECTURE.md
+│   ├── TRAINING.md
+│   ├── PLANNING.md
+│   └── API.md
+├── scripts/
+│   └── smoke.sh           # end-to-end CLI smoke test
 └── app/
     ├── config.py          # env-driven config
-    ├── fetcher.py         # OpenDota client + cache + DB upsert
+    ├── db.py              # connection + idempotent schema
+    ├── fetcher.py         # OpenDota client + cache + parse mgmt
+    ├── snapshots.py       # per-minute feature extraction
+    ├── train.py           # XGBoost win-prob trainer
+    ├── analyze.py         # win-prob curve + decision scorer
+    ├── coach.py           # heuristic beats + Claude → markdown review
     └── cli.py             # entry points
 ```
 
-## Roadmap
-
-| Phase | Status | What |
-|---|---|---|
-| 1. Ingest | done | docker compose, postgres schema, OpenDota fetcher with cache |
-| 2. Snapshots + training | next | per-minute feature rows, XGBoost win-prob model conditioned on rank |
-| 3. Decision scorer |  | extract item buys / deaths / kills, score by Δ win-prob |
-| 4. Streamlit UI |  | match_id → ranked decisions on a timeline |
-
-## Approach (Tier 1)
-
-Heuristic decision extraction + ML win-probability scorer:
-
-1. Fetch ~5k parsed Turbo matches at your `avg_rank_tier ± 10` from OpenDota.
-2. Build per-minute snapshots (`gold_adv`, `xp_adv`, tower / kill / rosh diffs, rank tier) and train an XGBoost classifier with `radiant_win` as the label.
-3. For a given match, walk *your* purchase log, kill log, and death events to surface candidate decisions; score each by win-prob delta in a window around its timestamp.
-
-There's no ground-truth label for "bad decision" in Dota — only win/loss — so this hybrid is the cheapest path to explainable output. Pure end-to-end ML (sequence/policy models) is in the much-bigger territory we explicitly skipped.
-
 ## Cost
 
-$0 — runs locally. OpenDota's free tier (50k calls / month) covers the data volume. Disk: 5–15 GB for ~5k cached parsed matches. XGBoost trains on a laptop in minutes.
+$0 — runs locally. OpenDota free tier (~2,000 calls/day) is sufficient for personal use. Disk: 5–15 GB for ~5,000 cached parsed matches. XGBoost trains on a laptop in minutes.
+
+## Roadmap
+
+| Phase | Status |
+|---|---|
+| 1. Ingest | done |
+| 2. Training pipeline | code ready, awaits data |
+| 3. Decision scorer | code ready, awaits trained model + a played match |
+| 3b. Coach (LLM review) | code ready, awaits a parsed match + `ANTHROPIC_API_KEY` |
+| Validation (play games, run pipeline end-to-end) | in progress |
+| 4. UI | deferred until validation passes |
+
+See [docs/PLANNING.md](docs/PLANNING.md) for the full validation plan and future work.
