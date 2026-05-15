@@ -167,6 +167,23 @@ Artifact saved to `data/turbo_winprob.json` (XGBoost native JSON format).
 
 ---
 
+### `refresh-doc`
+
+Re-syncs the `<!-- AUTO:current-model -->` and `<!-- AUTO:run-history -->` blocks in `docs/TRAINING.md` from the existing `data/model_meta.json`. No retraining, no API calls. Useful if the doc and the JSON got out of sync (e.g., manual edit).
+
+**Output (JSON):**
+```json
+{
+  "doc": "/code/docs/TRAINING.md",
+  "source": "/code/data/model_meta.json",
+  "val_auc": 0.8544
+}
+```
+
+**Errors:** `SystemExit` if `data/model_meta.json` doesn't exist yet (run `train` once first).
+
+---
+
 ### `analyze <match_id> [--top-k K] [--min-impact x]`
 
 Decision types extracted (v2):

@@ -61,8 +61,8 @@ while [ "$cycle" -le "$MAX_CYCLES" ]; do
     log "Sleeping ${SLEEP_BETWEEN}s while OpenDota processes the parse queue..."
     sleep "$SLEEP_BETWEEN"
 
-    log "refresh-parses (batched explorer + fetch newly-parsed)..."
-    dc refresh-parses --limit "$TARGET" || log "refresh-parses failed; continuing"
+    log "refresh-parses (per-match /matches/{id} check; up to 200 per cycle)..."
+    dc refresh-parses --limit 200 || log "refresh-parses failed; continuing"
 
     log "request-parses (top up unparsed)..."
     dc request-parses --limit "$TARGET" || log "request-parses failed; continuing"

@@ -7,16 +7,46 @@ from tqdm import tqdm
 from app import config, db
 
 
+_RETRYABLE_STATUSES = {429, 500, 502, 503, 504, 520, 521, 522, 524}
+
+
 def _get(path: str, params: dict | None = None) -> dict | list:
     url = f"{config.OPENDOTA_BASE}{path}"
+    last_resp = None
     for attempt in range(6):
-        r = requests.get(url, params=params or {}, timeout=30)
-        if r.status_code == 429:
+        try:
+            last_resp = requests.get(url, params=params or {}, timeout=60)
+        except requests.RequestException:
             time.sleep(2 ** attempt)
             continue
-        r.raise_for_status()
-        return r.json()
-    raise RuntimeError(f"giving up on {url}")
+        if last_resp.status_code in _RETRYABLE_STATUSES:
+            time.sleep(2 ** attempt)
+            continue
+        last_resp.raise_for_status()
+        return last_resp.json()
+    if last_resp is None:
+        raise RuntimeError(f"network failure on {url}")
+    last_resp.raise_for_status()
+
+
+def _post(path: str) -> None:
+    """POST with backoff on 429 and 5xx/CF errors — mirrors `_get`."""
+    url = f"{config.OPENDOTA_BASE}{path}"
+    last_resp = None
+    for attempt in range(6):
+        try:
+            last_resp = requests.post(url, timeout=30)
+        except requests.RequestException:
+            time.sleep(2 ** attempt)
+            continue
+        if last_resp.status_code in _RETRYABLE_STATUSES:
+            time.sleep(2 ** attempt)
+            continue
+        last_resp.raise_for_status()
+        return
+    if last_resp is None:
+        raise RuntimeError(f"network failure on POST {url}")
+    last_resp.raise_for_status()
 
 
 def _explorer(sql: str) -> list[dict]:
@@ -45,20 +75,27 @@ def _explorer_bracket(rank_tier: int, window: int = 10, limit: int = 5000) -> li
     return _explorer(sql)
 
 
-def _explorer_parse_status(match_ids: list[int], chunk: int = 200) -> set[int]:
+def _explorer_parse_status(match_ids: list[int], chunk: int = 50) -> set[int]:
     """Return the subset of match_ids that are now parsed in OpenDota's matches table.
 
-    Anything not returned is still unparsed. Batches into chunks of `chunk` IDs per query.
+    Anything not returned is still unparsed. Batches into chunks of `chunk` IDs (smaller
+    chunks are gentler on OpenDota's /explorer endpoint and less likely to 522). A failing
+    chunk is logged and skipped — refresh-parses continues with the rest.
     """
     if not match_ids:
         return set()
     parsed: set[int] = set()
+    n_chunks = (len(match_ids) + chunk - 1) // chunk
     for i in range(0, len(match_ids), chunk):
+        chunk_idx = i // chunk + 1
         ids = ",".join(str(mid) for mid in match_ids[i:i + chunk])
-        rows = _explorer(
-            f"SELECT match_id FROM matches WHERE match_id IN ({ids}) AND version IS NOT NULL"
-        )
-        parsed.update(r["match_id"] for r in rows)
+        try:
+            rows = _explorer(
+                f"SELECT match_id FROM matches WHERE match_id IN ({ids}) AND version IS NOT NULL"
+            )
+            parsed.update(r["match_id"] for r in rows)
+        except (requests.HTTPError, RuntimeError) as e:
+            print(f"  explorer chunk {chunk_idx}/{n_chunks} failed ({e}); continuing")
     return parsed
 
 
@@ -88,7 +125,7 @@ def fetch_match(match_id: int, force: bool = False) -> dict:
 
 
 def request_parse(match_id: int) -> None:
-    requests.post(f"{config.OPENDOTA_BASE}/request/{match_id}", timeout=30).raise_for_status()
+    _post(f"/request/{match_id}")
 
 
 def is_parsed(match: dict) -> bool:
@@ -210,50 +247,90 @@ def sync_bracket_matches(limit: int = 500, window: int = 10) -> dict:
     }
 
 
-def request_parses(limit: int = 200) -> dict:
-    """POST /request/<id> for unparsed matches currently in the DB. 1 call per match."""
+def request_parses(limit: int = 200, cooldown_hours: int = 24) -> dict:
+    """POST /request/<id> for unparsed matches, skipping those requested within `cooldown_hours`.
+
+    Cooldown stops us from burning API quota on duplicate parse requests for matches
+    OpenDota is already processing. Default 24h — OpenDota's parse queue can run hours
+    behind during peak, and a still-unparsed match a few hours later is almost certainly
+    queued (not dropped). After 24h we retry in case OpenDota genuinely lost the request.
+    """
     with db.connect() as conn:
-        ids = [r[0] for r in conn.execute(
-            "SELECT match_id FROM matches WHERE NOT parsed ORDER BY start_time DESC LIMIT %s",
-            (limit,),
+        total_unparsed = conn.execute(
+            "SELECT COUNT(*) FROM matches WHERE NOT parsed"
+        ).fetchone()[0]
+        eligible = [r[0] for r in conn.execute(
+            """SELECT match_id FROM matches
+               WHERE NOT parsed
+                 AND (parse_requested_at IS NULL
+                      OR parse_requested_at < NOW() - %s * INTERVAL '1 hour')
+               ORDER BY start_time DESC
+               LIMIT %s""",
+            (cooldown_hours, limit),
         ).fetchall()]
+
+    skipped_in_cooldown = total_unparsed - len(eligible)
     ok = failed = 0
-    for mid in tqdm(ids, desc="requesting parses"):
-        try:
-            request_parse(mid)
-            ok += 1
-        except requests.HTTPError as e:
-            tqdm.write(f"skip {mid}: {e}")
-            failed += 1
-    return {"unparsed_in_db": len(ids), "requested": ok, "failed": failed}
+    with db.connect() as conn:
+        for mid in tqdm(eligible, desc="requesting parses"):
+            try:
+                request_parse(mid)
+                conn.execute(
+                    "UPDATE matches SET parse_requested_at = NOW() WHERE match_id = %s",
+                    (mid,),
+                )
+                ok += 1
+            except requests.HTTPError as e:
+                tqdm.write(f"skip {mid}: {e}")
+                failed += 1
+    return {
+        "unparsed_in_db": total_unparsed,
+        "in_cooldown": skipped_in_cooldown,
+        "eligible": len(eligible),
+        "requested": ok,
+        "failed": failed,
+    }
 
 
-def refresh_parses(limit: int = 500) -> dict:
-    """Batched: 1 /explorer call per ~200 IDs to detect newly-parsed, then fetch their JSONs."""
+def refresh_parses(limit: int = 200) -> dict:
+    """Check parse status of unparsed matches by fetching /matches/{id} per match.
+
+    The earlier /explorer-based batched check turned out to be unreliable — OpenDota's
+    `matches` SQL table on /explorer lags behind the actual parse state visible via
+    /matches/{id}, sometimes by hours. So we fall back to per-match checks here.
+
+    Ordering: oldest-requested-first (NULLS FIRST so never-requested are checked first too).
+    Caller controls per-cycle cost via `limit`. Typical: 200 → ~200 API calls per cycle,
+    fits under free-tier quota with room for bracket-fetch / request-parses.
+    """
     with db.connect() as conn:
         ids = [r[0] for r in conn.execute(
-            "SELECT match_id FROM matches WHERE NOT parsed ORDER BY start_time DESC LIMIT %s",
+            "SELECT match_id FROM matches "
+            "WHERE NOT parsed "
+            "ORDER BY parse_requested_at ASC NULLS FIRST "
+            "LIMIT %s",
             (limit,),
         ).fetchall()]
 
     if not ids:
-        return {"unparsed_in_db": 0, "newly_parsed": 0, "api_calls": 0}
+        return {"unparsed_in_db": 0, "checked": 0, "newly_parsed": 0, "api_calls": 0}
 
-    newly_parsed_ids = _explorer_parse_status(ids)
-    explorer_calls = (len(ids) + 199) // 200
-
-    fetched = 0
+    api_calls = 0
+    newly_parsed = 0
     with db.connect() as conn:
-        for mid in tqdm(sorted(newly_parsed_ids), desc="fetching newly parsed"):
+        for mid in tqdm(ids, desc="checking parse status"):
             try:
                 m = fetch_match(mid, force=True)
+                api_calls += 1
                 upsert_match(conn, m)
-                fetched += 1
+                if is_parsed(m):
+                    newly_parsed += 1
             except requests.HTTPError as e:
                 tqdm.write(f"skip {mid}: {e}")
 
     return {
         "unparsed_in_db": len(ids),
-        "newly_parsed": fetched,
-        "api_calls": explorer_calls + fetched,
+        "checked": api_calls,
+        "newly_parsed": newly_parsed,
+        "api_calls": api_calls,
     }

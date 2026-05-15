@@ -2,6 +2,43 @@
 
 Deep reference for the win-probability model: data, features, model, metrics, and how to retrain. For the high-level architecture view, see [ARCHITECTURE.md](ARCHITECTURE.md); for CLI commands, see [API.md](API.md); for scope and roadmap, see [PLANNING.md](PLANNING.md).
 
+## Current trained model
+
+Live source of truth: `data/model_meta.json` (overwritten by every `train` run). The table below and the [run history](#training-run-history) further down are **auto-synced by `train`** — don't hand-edit the lines between the `AUTO` markers.
+
+<!-- AUTO:current-model:start -->
+| Field | Value |
+|---|---|
+| Trained on | **2026-05-15** |
+| `n_matches` | 997 |
+| `n_rows` (snapshots) | 21,899 |
+| `n_train_rows` / `n_val_rows` | 17,538 / 4,361 (80/20 group split) |
+| `val_log_loss` | 0.4558 |
+| **`val_auc`** | **0.8544** |
+| `best_iteration` | 64 |
+| Feature count | 19 |
+| Artifact path | `data/turbo_winprob.json` |
+<!-- AUTO:current-model:end -->
+
+**Headline:** `val_auc 0.85` is in the *solid* band of the volume-vs-quality table below — production-ready for Δ-scoring in `analyze`.
+
+### Training run history
+
+Every successful `train` appends a row here (deduped against the last row, so re-running with identical metrics is a no-op).
+
+<!-- AUTO:run-history:start -->
+| Date | n_matches | n_rows | val_auc | val_log_loss | best_iteration |
+|---|---|---|---|---|---|
+| 2026-05-15 | 589 | 12,618 | 0.8541 | 0.4596 | 60 |
+| 2026-05-15 | 997 | 21,899 | 0.8544 | 0.4558 | 64 |
+<!-- AUTO:run-history:end -->
+
+Observed so far: doubling the dataset (589 → 997) moved `val_auc` by +0.0003 (noise) and `val_log_loss` by −0.004 (modest calibration gain). The 19-feature model is **saturated at ~600 matches** for this bracket. Further gains will require **better features**, not more rows — see [Future work](#future-work).
+
+### How auto-sync works
+
+`app/train.py:_refresh_doc` runs at the end of every successful `train` and rewrites the `AUTO` blocks above. It's best-effort — a write failure logs a warning but doesn't fail training. To force a re-sync without retraining, just run `train` again (XGBoost is deterministic at fixed `random_state`, so the same data produces the same metrics).
+
 ## What gets trained
 
 A single XGBoost binary classifier predicting
@@ -34,9 +71,12 @@ OpenDota's `public_matches` table (game summary), LEFT-JOINed with `matches` to 
 | Target | Snapshot rows (rough) | Expected `val_auc` | Use case |
 |---|---|---|---|
 | 50 matches | ~1k | 0.65–0.75 | Pipeline smoke only — too noisy to trust |
-| **500 matches** | ~10k | **0.78–0.83** | **Recommended minimum for real use** |
-| 2000 matches | ~40k | 0.83–0.88 | Solid personal model |
+| **500 matches** | ~10k | **0.78–0.83** (we measured **0.854** thanks to hero features) | **Recommended minimum for real use** |
+| 1000 matches | ~22k | 0.83–0.87 (we measured **0.854**; saturated) | Solid personal model — likely no benefit beyond this with current features |
+| 2000 matches | ~40k | 0.83–0.88 | Marginal gains; only if `val_auc` < 0.80 at 1k |
 | 5000+ matches | ~100k+ | 0.85–0.90 | Diminishing returns |
+
+The hero-ID features (5+5 sorted columns) shifted observed `val_auc` ~0.02 above the original feature-set predictions in this table. With them, **~600 matches is enough** for a usable model.
 
 ### Patch / freshness
 
@@ -204,10 +244,11 @@ See [PLANNING.md](PLANNING.md) for the full project cost breakdown including coa
 
 ## TL;DR
 
-- Trained on ~500 random parsed Turbo matches at your `avg_rank_tier ± 10`. Not your matches.
+- Trained on ~500–1000 random parsed Turbo matches at your `avg_rank_tier ± 10`. Not your matches.
 - 19 features per minute: 8 game-state + 1 rank + 10 hero IDs.
 - Label is `radiant_win` (boolean). Group-aware 80/20 train/val split by `match_id`.
 - XGBoost classifier, depth 6, lr 0.05, early-stop at 20 rounds.
-- Success: `val_auc ≥ 0.78` in `data/model_meta.json`.
+- Success threshold: `val_auc ≥ 0.78`. **Current model: 0.854** (see [Current trained model](#current-trained-model)).
 - CPU time: under 2 min. Wall-clock to gather data: 1–3 days on free tier.
 - Idempotent and resumable — failures cost ~0 to recover from.
+- **Saturation observed at ~600 matches** with current features — see empirical findings above.

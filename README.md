@@ -84,9 +84,9 @@ $0 — runs locally. OpenDota free tier (~2,000 calls/day) is sufficient for per
 | Phase | Status |
 |---|---|
 | 1. Ingest | done |
-| 2. Training pipeline | code ready, awaits data |
-| 3. Decision scorer | code ready, awaits trained model + a played match |
-| 3b. Coach (LLM review) | code ready, awaits a parsed match + `ANTHROPIC_API_KEY` |
+| 2. Training pipeline | **done** — model trained on 997 matches, `val_auc 0.854` (see [docs/TRAINING.md](docs/TRAINING.md) for live metrics) |
+| 3. Decision scorer | code ready, awaits a parsed match the user played in |
+| 3b. Coach (LLM review) | code ready, awaits a parsed user-played match + `ANTHROPIC_API_KEY` |
 | Validation (play games, run pipeline end-to-end) | in progress |
 | 4. UI | deferred until validation passes |
 

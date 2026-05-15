@@ -47,6 +47,11 @@ def cmd_train(args: argparse.Namespace) -> None:
     print(json.dumps(train.train(n_estimators=args.n_estimators), indent=2))
 
 
+def cmd_refresh_doc(_: argparse.Namespace) -> None:
+    from app import train
+    print(json.dumps(train.refresh_doc_from_meta(), indent=2))
+
+
 def cmd_analyze(args: argparse.Namespace) -> None:
     from app import analyze
     print(json.dumps(
@@ -100,6 +105,9 @@ def main() -> None:
     tr = sub.add_parser("train", help="Train the XGBoost win-prob model on snapshots")
     tr.add_argument("--n-estimators", type=int, default=400)
     tr.set_defaults(func=cmd_train)
+
+    rd = sub.add_parser("refresh-doc", help="Re-sync docs/TRAINING.md from existing data/model_meta.json (no retrain)")
+    rd.set_defaults(func=cmd_refresh_doc)
 
     an = sub.add_parser("analyze", help="Rank a match's decisions by win-prob delta")
     an.add_argument("match_id", type=int)

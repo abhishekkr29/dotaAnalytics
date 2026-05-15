@@ -12,6 +12,7 @@ MATCHES_DIR = DATA_DIR / "matches"
 REVIEWS_DIR = DATA_DIR / "reviews"
 PROFILE_PATH = DATA_DIR / "profile.json"
 MEMORY_PATH = DATA_DIR / "coach_memory.json"
+MODEL_PATH = DATA_DIR / "turbo_winprob.json"
 MATCHES_DIR.mkdir(parents=True, exist_ok=True)
 REVIEWS_DIR.mkdir(parents=True, exist_ok=True)
 

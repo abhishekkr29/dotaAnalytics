@@ -165,8 +165,8 @@ def analyze(match_id: int, top_k: int = 5, min_impact: float = 0.005) -> dict:
         )
 
     user_team_is_radiant = (you.get("player_slot") or 0) < 128
-    heroes_by_id = heroes_by_id()
-    heroes_by_npc = _heroes_by_npc(heroes_by_id)
+    heroes_id_map = heroes_by_id()
+    heroes_by_npc = _heroes_by_npc(heroes_id_map)
     model = _load_model()
 
     snaps = snapshots.extract(match)
@@ -177,18 +177,17 @@ def analyze(match_id: int, top_k: int = 5, min_impact: float = 0.005) -> dict:
     user_wp = radiant_wp if user_team_is_radiant else [1 - p for p in radiant_wp]
 
     decisions = _extract_decisions(
-        match, you, heroes_by_id, heroes_by_npc, user_team_is_radiant
+        match, you, heroes_id_map, heroes_by_npc, user_team_is_radiant
     )
     decisions = _score(decisions, user_wp)
     scored = [d for d in decisions if abs(d["impact"]) >= min_impact]
-    scored.sort(key=lambda d: d["impact"])
-    leaks = scored[:top_k]
-    kept = list(reversed(scored[-top_k:]))
+    leaks = sorted([d for d in scored if d["impact"] < 0], key=lambda d: d["impact"])[:top_k]
+    kept = sorted([d for d in scored if d["impact"] > 0], key=lambda d: d["impact"], reverse=True)[:top_k]
 
     return {
         "match_id": match_id,
         "you": {
-            "hero": heroes_by_id.get(you.get("hero_id"), {}).get("localized_name", "?"),
+            "hero": heroes_id_map.get(you.get("hero_id"), {}).get("localized_name", "?"),
             "slot": you.get("player_slot"),
             "team": "radiant" if user_team_is_radiant else "dire",
             "kda": f"{you.get('kills', 0)}/{you.get('deaths', 0)}/{you.get('assists', 0)}",

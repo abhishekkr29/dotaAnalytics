@@ -32,8 +32,8 @@ Tier 1's hybrid lets us ship something explainable and cheap that captures most 
 | Phase | Status | Scope |
 |---|---|---|
 | **1. Ingest** | done | docker-compose, postgres schema, OpenDota fetcher with disk + DB cache. `account`, `profile`, `bracket-fetch`, `match-fetch` |
-| **2. Training pipeline** | code ready, awaits data | Parse-pending workflow (`request-parses`, `refresh-parses`), snapshot extraction (`snapshots`), XGBoost training (`train`). Hero IDs included as features (5 radiant + 5 dire). Awaits ~500 parsed matches to fit a useful model. **Full reference: [TRAINING.md](TRAINING.md).** |
-| **3. Decision scorer** | code ready, awaits model | `analyze <match_id>` — win-prob curve + ranked decisions JSON. Decision types: item / death / kill / roshan / smoke / ward_obs / ward_sen. Awaits a trained model + a parsed match the user is in |
+| **2. Training pipeline** | **done — model trained 2026-05-15** | 997 parsed matches, `val_auc 0.854`. Hero IDs included as features (5 radiant + 5 dire). Saturated at current dataset size. Full reference + live metrics: [TRAINING.md](TRAINING.md). |
+| **3. Decision scorer** | code ready, awaits user-played match | `analyze <match_id>` — win-prob curve + ranked decisions JSON. Decision types: item / death / kill / roshan / smoke / ward_obs / ward_sen. Model is loaded, only blocker is a parsed match where the user is a player. |
 | **3b. Coach (LLM review + session memory)** | code ready, awaits API key + match | `coach <match_id>` — hybrid: heuristic narrative beats + Claude Sonnet 4.6 → markdown. Maintains `data/coach_memory.json` to surface recurring patterns across reviews. |
 | **4. UI** | deferred | Streamlit dashboard. Deferred until Phases 1–3b are validated end-to-end against real games the user has played |
 | 5. Improvements (TBD) | not started | See "Future work" below |

@@ -27,6 +27,7 @@ services:
     volumes:
       - ./app:/code/app
       - ./data:/code/data
+      - ./docs:/code/docs
 
 volumes:
   pgdata:
