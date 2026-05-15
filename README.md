@@ -2,7 +2,7 @@
 
 Personal Dota 2 Turbo decision analyzer. Pulls match data via OpenDota, trains a Turbo-specific win-probability model conditioned on your rank bracket, and ranks the in-game decisions of any single match by their impact on win probability — so you can see which calls helped and which were leaks.
 
-**Status:** CLI-only. **Phases 1–3b (ingest, training, decision scorer, LLM coach) are done and validated end-to-end** on real user matches as of 2026-05-15. Phase 4 (UI) deferred — CLI is sufficient for personal use.
+**Status:** Phases 1–4 done. **Validated end-to-end** on real user matches as of 2026-05-15. CLI workflows unchanged; web UI is a separate Streamlit service.
 
 - Trained win-prob model: `val_auc 0.854` on 997 Turbo matches at your rank bracket.
 - Analyze: signed Δ-win-prob attribution for 7 decision types (item / death / kill / roshan / smoke / ward_obs / ward_sen).
@@ -10,7 +10,7 @@ Personal Dota 2 Turbo decision analyzer. Pulls match data via OpenDota, trains a
 
 Scope: **Turbo only** (`game_mode = 23`), one user, runs locally via docker compose.
 
-## Quick start
+## Quick start — CLI
 
 Edit `.env` to set your `ACCOUNT_ID` (Dota friend code or 32-bit OpenDota account ID), then:
 
@@ -26,6 +26,17 @@ docker compose run --rm app python -m app.cli train
 docker compose run --rm app python -m app.cli analyze <match_id>
 docker compose run --rm app python -m app.cli coach <match_id>     # natural-language review via Claude
 ```
+
+## Quick start — Web UI
+
+```bash
+docker compose up -d web                              # starts Streamlit on :8501
+open http://localhost:8501                            # macOS; or just open it in any browser
+```
+
+MVP scope: paste a match ID, see win-prob curve + ranked decisions, click "Generate coach review" for a Claude-written markdown report. Sidebar shows DB status, current `val_auc`, coach-memory size, and a model-tier selector for cost control. **CLI workflows are unchanged** — the web service runs alongside on `:8501`, doesn't interfere.
+
+Stop with `docker compose stop web`; remove with `docker compose down`.
 
 The `coach` command additionally requires `ANTHROPIC_API_KEY` in `.env` (gitignored — never commit a key).
 
@@ -77,6 +88,7 @@ ANTHROPIC_API_KEY=sk-ant-...   # required only for `coach`; leave blank otherwis
     ├── train.py           # XGBoost win-prob trainer
     ├── analyze.py         # win-prob curve + decision scorer
     ├── coach.py           # heuristic beats + Claude → markdown review
+    ├── web.py             # Streamlit MVP — single-page analyzer + coach
     └── cli.py             # entry points
 ```
 
@@ -93,6 +105,6 @@ $0 — runs locally. OpenDota free tier (~2,000 calls/day) is sufficient for per
 | 3. Decision scorer | **done — validated on 2 real user matches** |
 | 3b. Coach (LLM review + memory) | **done — validated** (counterfactuals, item prescription, farm critique, recurring-pattern memory across reviews) |
 | Validation (play games, run pipeline end-to-end) | **done 2026-05-15** |
-| 4. UI | deferred (not on active roadmap) |
+| 4. UI (Streamlit MVP) | **done** — runs on `:8501` as a separate service ([docs/PLANNING.md](docs/PLANNING.md#future-work---roadmap) lists future UI additions) |
 
 See [docs/PLANNING.md](docs/PLANNING.md) for the full validation plan and future work.

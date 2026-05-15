@@ -61,7 +61,7 @@ End-to-end validated on real user matches. The CLI surface (`docker compose run 
 | **2. Training pipeline** | **done — validated 2026-05-15** | XGBoost win-prob model. 997 parsed matches, `val_auc 0.854`. Hero IDs as features. Saturated at current dataset size. Auto-updates `docs/TRAINING.md`. Live metrics: [TRAINING.md](TRAINING.md). |
 | **3. Decision scorer** | **done — validated on 2 user matches** | `analyze` produces signed Δ-win-prob per decision. Validated against the two parsed matches in your recent history (win + loss); win curves and decision attribution track ground-truth outcomes. |
 | **3b. Coach (LLM review + session memory)** | **done — validated on 2 user matches** | Hybrid: rules pin facts → Claude phrases. Full per-player profiles (KDA / GPM / NW / lane / items with timings / farm snapshots), smoke timeline, win-prob curve, kill timeline. Output includes item-build prescription + farm critique + concrete counterfactuals. Cross-match pattern detection via `coach_memory.json`. Cost ~$0.03–0.05 per review on Sonnet 4.6. |
-| **4. UI** | not started | Streamlit dashboard on `:8501`. **Deferred** — the CLI is enough for personal use; not on the active roadmap. Would render: win-prob curve as line chart, decision cards, embedded coach markdown. |
+| **4. UI (MVP)** | **done 2026-05-15** | Streamlit single-page app on `:8501` as a separate `web` service in docker-compose. Match-ID paste → auto-fetch → win-prob chart + leaks/kept decision cards → "Generate coach review" button → markdown render. Sidebar: DB status, val_auc, memory size, model-tier selector. CLI unaffected. |
 | **5. Improvements** | scoped, not started | See "Future work" below — grouped by area + tagged with rough effort. |
 
 ## Validation plan — **done**
@@ -107,9 +107,9 @@ Phase 4 (UI) remains deferred — CLI is sufficient and the validation effort co
 | 3b. Coach (LLM review + memory + farm critique + item prescription) | ~10 h | done |
 | Validation (wall-clock, mostly waiting for parses) | ~12 h spread over 1 day | done |
 | Hardening (cooldowns, retries, 429/5xx, explorer-lag workaround, auto-doc-sync) | ~4 h | done |
-| 4. UI | ~6–8 h | deferred (not on roadmap) |
+| 4. UI (Streamlit MVP) | ~3 h | done |
 
-Active dev time so far: ~40 h.
+Active dev time so far: ~43 h.
 
 ## OpenDota rate-limit considerations
 
@@ -190,12 +190,20 @@ Grouped by area. Effort rough: **S** ≤2h, **M** ~half-day, **L** day+, **XL** 
 | Replay-clip timestamps | S | Output deep-links to `dota2://` URLs for jumping into the replay at the decision moment |
 | Coach-driven retraining hint | M | If coach commentary repeatedly cites "model didn't capture X", surface a "consider retraining" recommendation |
 
-### UI (Phase 4 — deferred)
+### UI additions (Phase 4 MVP done — these are future enhancements)
 
 | Idea | Effort | Why |
 |---|---|---|
-| Streamlit dashboard on `:8501` | L | Paste match ID → win-prob chart + decision cards + embedded coach markdown. Same `analyze`/`coach` backend. Deferred indefinitely; CLI is sufficient for personal use |
-| Coach review browser | M | Side-by-side review of `data/reviews/*.md` files with filtering by hero/result/themes |
+| Multi-page nav (analyzer / history / memory / stats) | M | Split the single-page MVP into a sidebar nav. Streamlit supports this via `pages/`. |
+| Match history browser | M | List of cached matches with filtering by date / hero / result. Click → load into analyzer. |
+| Coach review reader | S | Browse `data/reviews/*.md` files; filter by theme tags from memory. |
+| Pattern viewer | S | Render `data/coach_memory.json` as a heat-map / chart: "you die to X N% of the time in last 20 games". |
+| Live training-loop progress | M | Stream `train_loop.sh` progress into the UI rather than CLI. |
+| In-UI parse-request triggering | S | Buttons for `bracket-fetch` / `request-parses` / `refresh-parses` from the web. |
+| Real-time win-prob during a game | XL | Requires hooking into Steam live-match API + per-second feature pipeline. Big effort, real value. |
+| Coach review side-by-side comparison | M | Compare reviews of two matches (e.g. last loss vs last win on same hero). |
+| Export / PDF coach review | S | Download button for shareable reviews. |
+| Cost / API-spend dashboard | S | Track cumulative Anthropic + OpenDota usage over time. |
 
 ### Quality / ops
 

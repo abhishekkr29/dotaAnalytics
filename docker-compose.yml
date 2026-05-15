@@ -29,5 +29,27 @@ services:
       - ./data:/code/data
       - ./docs:/code/docs
 
+  web:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://dota:dota@db:5432/dota
+      DATA_DIR: /code/data
+    volumes:
+      - ./app:/code/app
+      - ./data:/code/data
+      - ./docs:/code/docs
+    ports:
+      - "8501:8501"
+    command: [
+      "streamlit", "run", "/code/app/web.py",
+      "--server.port=8501",
+      "--server.address=0.0.0.0",
+      "--browser.gatherUsageStats=false"
+    ]
+
 volumes:
   pgdata:

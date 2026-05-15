@@ -48,6 +48,7 @@ check "docker compose build (cached or fresh)" docker compose build
 check_contains "CLI dispatcher exposes coach"   "coach"     _dc --help
 check_contains "CLI dispatcher exposes analyze" "analyze"   _dc --help
 check_contains "CLI dispatcher exposes train"   "train"     _dc --help
+check "web service responds on :8501" bash -c "docker compose up -d web >/dev/null 2>&1 && sleep 3 && curl -fsS -o /dev/null http://localhost:8501"
 
 echo
 echo "=== positive path (no data required) ==="

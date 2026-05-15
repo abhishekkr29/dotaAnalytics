@@ -49,6 +49,7 @@ Two services, one shared volume, one external dependency (OpenDota's public API)
 | `app/train.py` | Loads snapshots, group-aware train/val split, fits XGBoost classifier, saves model + metrics |
 | `app/analyze.py` | Loads a single match + model, computes win-prob curve, extracts and scores candidate decisions |
 | `app/coach.py` | Hybrid layer on top of `analyze`: rule-based narrative beats + Claude (via `anthropic` SDK) to synthesize a markdown coach review |
+| `app/web.py` | Streamlit MVP: single-page match analyzer + coach review viewer. Runs as a separate `web` service on `:8501`; reuses `analyze`/`coach`/`fetcher` directly via imports |
 | `app/cli.py` | argparse entry points. Calls `db.ensure_schema()` once on startup, dispatches to module functions |
 
 ## Training pipeline
