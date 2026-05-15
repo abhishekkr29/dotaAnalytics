@@ -69,7 +69,15 @@ if [ "$HAS_SNAPSHOTS" = "t" ]; then
 else
     check_contains "train fails clean when no snapshots" "no snapshot rows yet" _dc train
 fi
-check_contains "analyze 404s gracefully"                  "not found on OpenDota"     _dc analyze 1
+# Accept either "not found on OpenDota" (when their API returns 404)
+# or "currently unreachable" (when their service is degraded and returns 5xx instead).
+out=$(_dc analyze 1 2>&1) || true
+if printf '%s' "$out" | grep -qE '(not found on OpenDota|currently unreachable)'; then
+    printf '  [PASS] analyze handles missing/unreachable match gracefully\n'; PASS=$((PASS+1))
+else
+    printf '  [FAIL] analyze on bogus match id 1 — unexpected output: %s\n' "$(printf '%s' "$out" | tail -1)"
+    FAIL=$((FAIL+1)); FAILED+=("analyze handles missing/unreachable")
+fi
 check_contains "analyze rejects unparsed match"           "not parsed yet"            _dc analyze 8810012394
 
 if ! grep -E '^ANTHROPIC_API_KEY=.+$' .env >/dev/null 2>&1; then

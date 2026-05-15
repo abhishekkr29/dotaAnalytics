@@ -85,39 +85,58 @@ Fetch one match by ID, cache the JSON, upsert a summary row.
 
 ### `request-parses --limit N`
 
-POST `/request/{id}` for unparsed matches in the DB, queueing them for OpenDota's parse service.
+POST `/request/{id}` for unparsed matches in the DB, queueing them for OpenDota's parse service. Skips any match that was already parse-requested within the last 24 hours (cooldown via `matches.parse_requested_at`) to avoid burning API quota on duplicate submissions.
+
+429s are retried with exponential backoff up to 6 attempts (~63 s total per match); 5xx / Cloudflare 52x errors also retry. After exhausting retries, the match is skipped via `HTTPError` and the loop continues.
 
 **Args:**
-- `--limit N` (default `200`) — how many unparsed matches to submit.
+- `--limit N` (default `200`) — how many eligible (not in cooldown) unparsed matches to submit.
 
 **Output (JSON):**
 ```json
 {
-  "unparsed_in_db": 50,
-  "requested": 50,
+  "unparsed_in_db": 1000,
+  "in_cooldown": 970,
+  "eligible": 30,
+  "requested": 30,
   "failed": 0
 }
 ```
+
+- `unparsed_in_db`: total unparsed rows in `matches` table
+- `in_cooldown`: skipped due to `parse_requested_at < NOW() - 24h` not yet elapsed
+- `eligible`: candidates after cooldown filter, capped at `--limit`
+- `requested` / `failed`: successful and failed POSTs
 
 ---
 
 ### `refresh-parses --limit N`
 
-Batch-check parse status of unparsed DB matches via `/explorer` (1 call per ~200 IDs), then fetch the JSONs of any newly-parsed ones. 3N → ~1N+K, where K = newly-parsed count.
+Per-match `/matches/{id}` re-fetch for unparsed DB matches. Each fetch updates `matches.parsed` if the JSON now has `version` set. Ordering: oldest `parse_requested_at` first (most likely to have completed).
+
+Why per-match rather than a batched `/explorer` query: OpenDota's `matches` SQL table on `/explorer` lags behind actual parse state visible via `/matches/{id}` (sometimes by hours). The earlier batched approach silently missed parsed matches. Per-match is slower but reliable.
+
+429 / 5xx retries on each call (same retry logic as `_get`).
 
 **Args:**
-- `--limit N` (default `500`) — how many unparsed matches to re-check.
+- `--limit N` (default `200`) — how many unparsed matches to re-check per invocation.
 
 **Output (JSON):**
 ```json
 {
-  "unparsed_in_db": 480,
-  "newly_parsed": 73,
-  "api_calls": 76
+  "unparsed_in_db": 200,
+  "checked": 199,
+  "newly_parsed": 199,
+  "api_calls": 199
 }
 ```
 
-`api_calls = explorer batches (ceil(N/200)) + JSON fetches for newly-parsed`. Typical workflow: `request-parses`, wait 10–30 min, `refresh-parses`, repeat.
+- `unparsed_in_db`: rows queried from the DB (capped at `--limit`)
+- `checked`: actually re-fetched (some may have been skipped on persistent errors)
+- `newly_parsed`: count whose `is_parsed(match)` returned true after re-fetch
+- `api_calls`: total OpenDota calls made (~equals `checked`)
+
+Typical workflow: `request-parses`, wait 10–30 min, `refresh-parses`, repeat. With 24h cooldown on `request-parses`, the inner loop becomes mostly `refresh-parses` after the first cycle.
 
 ---
 

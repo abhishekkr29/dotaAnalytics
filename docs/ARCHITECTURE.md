@@ -131,13 +131,15 @@ Per-minute features (one row per match-minute, see `app/train.py:FEATURE_COLS`):
 
 | Decision type | Source | Filter |
 |---|---|---|
-| Key item bought | `players[you].purchase_log` | `key ∈ KEY_ITEMS` in `app/analyze.py` |
-| Death | `players[opponents].kills_log[].key == npc_dota_hero_<yours>` | all entries |
-| Kill | `players[you].kills_log` | all entries |
-| Roshan kill | `objectives[type == CHAT_MESSAGE_ROSHAN_KILL]` | only credited to your team |
-| Smoke (gank init) | `players[you].purchase_log` with `key == "smoke_of_deceit"` | all entries |
-| Observer ward | `players[you].obs_log` | all entries |
-| Sentry ward | `players[you].sen_log` | all entries |
+| `item` — key item bought | `players[you].purchase_log` | `key ∈ KEY_ITEMS` in `app/analyze.py` |
+| `death` | opposing players' `kills_log[].key == npc_dota_hero_<yours>` | all entries |
+| `kill` | `players[you].kills_log` | all entries |
+| `roshan` | `objectives[type == CHAT_MESSAGE_ROSHAN_KILL]` | only credited to your team |
+| `smoke` (gank init) | `players[you].purchase_log` with `key == "smoke_of_deceit"` | all entries |
+| `ward_obs` | `players[you].obs_log` | all entries |
+| `ward_sen` | `players[you].sen_log` | all entries |
+
+After scoring, decisions split by sign: positive Δ → `kept_doing_this`, negative Δ → `biggest_leaks`. The two lists are disjoint; empty `biggest_leaks` in a clean win means there were no negative-Δ events above the impact threshold.
 
 After scoring, decisions with `|impact| < min_impact` (default `0.005`) are dropped as noise. The rest are sorted by signed impact: top-K positive → "kept doing this", bottom-K → "biggest leaks".
 

@@ -143,8 +143,13 @@ def analyze(match_id: int, top_k: int = 5, min_impact: float = 0.005) -> dict:
     try:
         match = fetcher.fetch_match(match_id)
     except requests.HTTPError as e:
-        if e.response is not None and e.response.status_code == 404:
+        status = e.response.status_code if e.response is not None else None
+        if status == 404:
             raise SystemExit(f"match {match_id} not found on OpenDota")
+        if status and status >= 500:
+            raise SystemExit(
+                f"OpenDota is currently unreachable (HTTP {status}). Try again in a few minutes."
+            )
         raise
 
     if match.get("game_mode") != config.TURBO_GAME_MODE:

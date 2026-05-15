@@ -2,7 +2,11 @@
 
 Personal Dota 2 Turbo decision analyzer. Pulls match data via OpenDota, trains a Turbo-specific win-probability model conditioned on your rank bracket, and ranks the in-game decisions of any single match by their impact on win probability — so you can see which calls helped and which were leaks.
 
-**Status:** CLI-only. Phases 1–3 (ingest, training pipeline, decision scorer) are code-ready. Phase 4 (UI) is deferred until the CLI flow is validated against real matches.
+**Status:** CLI-only. **Phases 1–3b (ingest, training, decision scorer, LLM coach) are done and validated end-to-end** on real user matches as of 2026-05-15. Phase 4 (UI) deferred — CLI is sufficient for personal use.
+
+- Trained win-prob model: `val_auc 0.854` on 997 Turbo matches at your rank bracket.
+- Analyze: signed Δ-win-prob attribution for 7 decision types (item / death / kill / roshan / smoke / ward_obs / ward_sen).
+- Coach: ~700-word markdown reviews with item-build prescription, farm-pattern critique, timing-window counterfactuals, and cross-match memory.
 
 Scope: **Turbo only** (`game_mode = 23`), one user, runs locally via docker compose.
 
@@ -63,7 +67,8 @@ ANTHROPIC_API_KEY=sk-ant-...   # required only for `coach`; leave blank otherwis
 │   ├── PLANNING.md
 │   └── API.md
 ├── scripts/
-│   └── smoke.sh           # end-to-end CLI smoke test
+│   ├── smoke.sh           # end-to-end CLI smoke test
+│   └── train_loop.sh      # auto-paced bracket-fetch / request-parses / refresh-parses → snapshots → train
 └── app/
     ├── config.py          # env-driven config
     ├── db.py              # connection + idempotent schema
@@ -84,10 +89,10 @@ $0 — runs locally. OpenDota free tier (~2,000 calls/day) is sufficient for per
 | Phase | Status |
 |---|---|
 | 1. Ingest | done |
-| 2. Training pipeline | **done** — model trained on 997 matches, `val_auc 0.854` (see [docs/TRAINING.md](docs/TRAINING.md) for live metrics) |
-| 3. Decision scorer | code ready, awaits a parsed match the user played in |
-| 3b. Coach (LLM review) | code ready, awaits a parsed user-played match + `ANTHROPIC_API_KEY` |
-| Validation (play games, run pipeline end-to-end) | in progress |
-| 4. UI | deferred until validation passes |
+| 2. Training pipeline | **done** — `val_auc 0.854` on 997 matches ([docs/TRAINING.md](docs/TRAINING.md) for live metrics) |
+| 3. Decision scorer | **done — validated on 2 real user matches** |
+| 3b. Coach (LLM review + memory) | **done — validated** (counterfactuals, item prescription, farm critique, recurring-pattern memory across reviews) |
+| Validation (play games, run pipeline end-to-end) | **done 2026-05-15** |
+| 4. UI | deferred (not on active roadmap) |
 
 See [docs/PLANNING.md](docs/PLANNING.md) for the full validation plan and future work.

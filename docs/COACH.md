@@ -52,30 +52,57 @@ Coach never writes to the postgres `matches` or `snapshots` tables. All coach-si
 | **Decisions by phase** | `analyze` decisions grouped by minute | `early` (≤8 min), `mid` (8–15 min), `late` (>15 min) |
 | **Recurring death patterns** | `Counter` over death decisions' detail strings | "Killed 3 times by Pudge" |
 | **Win-prob peaks/troughs** | curve `max`/`min` indices | "Peaked at 67% around min 12, bottomed at 23% around min 18" |
-| **Teammates / enemies** | match `players[]` × cached hero map | Full hero composition by side |
+| **Teammate / enemy profiles** *(rich)* | `_player_profile` per `players[]` | Per-player: `hero`, `kda`, `gpm`, `xpm`, `net_worth`, `lane_role`, `key_items` with timings, `farm_snapshots` |
+| **Farm snapshots** | `_farm_snapshots` from `gold_t` / `lh_t` / `xp_t` | Per-player `min5:Xg/Ylh/Zxp` markers at minutes 5/10/15 — lets the coach diagnose lane outcomes and identify "alone-farming" enemies |
+| **Smoke events** | `players[i].purchase_log[].key == "smoke_of_deceit"` | Timeline of all smoke buys with who and when |
+| **Kill timeline** | `players[i].kills_log` aggregated per minute | Compact `min N: R<r>/D<d>` per minute with at least one kill — surfaces fight pacing |
+| **Win-prob curve** | `analyze` report `win_prob_curve` | Per-minute win-prob from your team's perspective, full curve |
+| **Comeback note** | curve-derived | For losses: "Last realistically winnable moment: minute N". For wins: "Closest you got to losing: minute N." Empty if neither applies. |
 
-These are deterministic — same match in, same beats out. The LLM never sees raw match JSON; it sees these beats.
+All beats are deterministic — same match in, same beats out. The LLM never sees raw match JSON; it sees these beats only.
 
 ## Prompt structure
 
 ### System prompt
 
-Fixed across calls, ~250 tokens. Defined as `SYSTEM_PROMPT` in `app/coach.py`.
+Fixed across calls, ~750 tokens. Defined as `SYSTEM_PROMPT` in `app/coach.py`.
 
-Specifies:
-- Role: Dota 2 Turbo coach
-- Output structure: opening sentence(s) + phase paragraphs + 3 takeaways
-- Rules: no inventions, cite timestamps in MM:SS, only meaningful Δ win-prob (|Δ| ≥ 5%), ~500 words max
+Required output sections (in order):
+
+1. **Opening** — 1–2 sentences (hero, result, framing)
+2. **Phase-by-phase review** — early / mid / late paragraphs, naming specific enemy heroes and citing win-prob numbers
+3. **What could have been done differently** — 2–3 concrete counterfactuals. Required for losses; optional for wins. Must cover at least three dimensions across the counterfactuals:
+   - **Item-build counters** (timing vs enemy timings, alternative items)
+   - **Farm pattern** (read `farm: min5/min10/min15` snapshots; spot lane deficits or alone-farming enemies)
+   - **Timing windows** (BKB-not-online-yet → fight; smoke events → which kill; Roshan timing; tower-killing windows)
+4. **Item-build prescription** — 2–4 items the player should have built or built differently, each justified vs specific enemy heroes (skip if build was correct)
+5. **Three takeaways** — numbered, specific, actionable, tied to data
+
+Key rules:
+- Reference enemy heroes **by name** — never "the enemy carry" if you can say "Phantom Assassin"
+- Cite real `farm: minX:Yg/Zlh/Wxp` numbers for farm critiques
+- Cite enemy item timings explicitly (e.g., "BKB at 14:38")
+- Don't invent events, ward positions, or stats not in the prompt
+- 500–800 word target
 - Memory awareness: call out recurring patterns if "Recent match history" is supplied
 
 ### User prompt (per-call)
 
-Built from beats + memory. Sections:
-1. Match summary (hero, result, KDA, duration, rank, patch, composition)
-2. Scored decisions by phase
-3. Notable patterns (death counts, win-prob peaks)
-4. (If memory exists) Recent match history — last 5 entries
-5. `"Write the coach review now."`
+Built from beats + memory. Sections in order:
+
+1. **Match header** — match_id, your hero/team/KDA, result, duration, rank tier, patch
+2. **Hero profiles** — your team (excluding you) + enemy team. Each player on two lines:
+   - Line 1: `hero  KDA  GPM  XPM  NW  lane`
+   - Line 2: `farm: min5:Xg/Ylh/Zxp  min10:...  min15:...`
+   - Line 3: `items: <item>@MM:SS, ...`
+3. **Win-prob curve** — compact `00:50%, 01:48%, 02:52%, ...` per minute
+4. **Kill timeline** — per-minute Radiant/Dire kill counts
+5. **Smoke events** — every smoke buy with who and side, sorted
+6. **Scored decisions by phase** — leaks + kept-doing grouped by early/mid/late
+7. **Notable patterns** — death-killer counts, win-prob peak/trough
+8. **Trajectory note** — comeback opportunity or "closest to losing" line
+9. **Recent match history** — last 5 prior reviews (only if memory exists)
+10. **Final instruction** — "Write the coach review now. Be specific. Use the raw data..."
 
 ### Prompt caching
 
@@ -138,13 +165,13 @@ For 50 reviews/month: Haiku ≈ $0.05/mo, Sonnet ≈ $0.25/mo, Opus ≈ $2.50/mo
 
 ## Cost
 
-Per call on Sonnet 4.6:
+Per call on Sonnet 4.6 (richer prompt as of 2026-05-15):
 
 | Component | Range |
 |---|---|
-| Input tokens (system + beats + memory) | ~1,500–2,500 |
-| Output tokens (markdown review) | ~500–1,000 |
-| **Total cost** | **~$0.005–0.03** per match |
+| Input tokens (system + beats + farm snapshots + memory) | ~2,500–3,500 |
+| Output tokens (markdown review with counterfactuals + item prescription) | ~1,000–2,000 |
+| **Total cost** | **~$0.025–0.05** per match |
 
 Cost echoed back in the coach JSON output:
 
@@ -171,7 +198,7 @@ For the full project cost table (OpenDota + LLM tiers + optional premium), see [
 | `MEMORY_LIMIT` | 20 | Max entries retained in `coach_memory.json` |
 | `MEMORY_IN_PROMPT` | 5 | Entries injected into the next prompt |
 | `MODEL_ALIASES` | `{haiku, sonnet, opus}` → model IDs | Tier shortcuts |
-| `max_tokens` (in `messages.create`) | 2000 | Output cap per call |
+| `max_tokens` (in `messages.create`) | 3500 | Output cap per call (raised to fit longer counterfactual + prescription sections) |
 
 ### CLI flags
 
