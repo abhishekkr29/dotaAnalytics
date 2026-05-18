@@ -38,6 +38,8 @@ KEY_ITEMS = {
 
 _TOWER_TEAM_RADIANT = 2
 
+_LANE_ROLE = {1: "safe", 2: "mid", 3: "off", 4: "jungle"}
+
 
 def heroes_by_id() -> dict[int, dict]:
     """Return {hero_id: hero_dict} from cached /heroes endpoint."""
@@ -51,7 +53,14 @@ def _heroes_by_npc(heroes: dict[int, dict]) -> dict[str, dict]:
     return {h["name"]: h for h in heroes.values()}
 
 
-def _load_model() -> xgb.XGBClassifier:
+def _load_model() -> tuple[xgb.XGBClassifier, list[str], dict]:
+    """Load model + the matching feature subset + optional per-bracket calibrators.
+
+    Backward-compat: if the model was trained with fewer features than the current
+    FEATURE_COLS list, we trim to `n_features_in_` so adding new features later
+    doesn't break inference on an older model. Calibrators are optional — when
+    `data/calibrators.joblib` is missing we use raw model probabilities.
+    """
     if not config.MODEL_PATH.exists():
         raise SystemExit(
             f"no model at {config.MODEL_PATH} — run `train` first "
@@ -59,18 +68,48 @@ def _load_model() -> xgb.XGBClassifier:
         )
     model = xgb.XGBClassifier()
     model.load_model(str(config.MODEL_PATH))
-    return model
+    n_features = int(getattr(model, "n_features_in_", len(FEATURE_COLS)))
+    features = FEATURE_COLS[:n_features]
+
+    cal_path = config.DATA_DIR / "calibrators.joblib"
+    calibrators: dict = {}
+    if cal_path.exists():
+        try:
+            import joblib
+            calibrators = joblib.load(cal_path)
+        except Exception as e:
+            print(f"warning: failed to load calibrators ({e}); using raw probabilities")
+
+    return model, features, calibrators
 
 
-def _win_prob_curve(model: xgb.XGBClassifier, snaps: list[dict]) -> list[float]:
-    X = np.array([[s[c] for c in FEATURE_COLS] for s in snaps], dtype=np.float32)
-    return model.predict_proba(X)[:, 1].tolist()
+def _win_prob_curve(
+    model: xgb.XGBClassifier,
+    snaps: list[dict],
+    features: list[str],
+    calibrators: dict,
+    match_rank_tier: int | None,
+) -> list[float]:
+    X = np.array([[s[c] for c in features] for s in snaps], dtype=np.float32)
+    raw = model.predict_proba(X)[:, 1]
+    bucket = (match_rank_tier // 10) if match_rank_tier else None
+    if bucket is not None and bucket in calibrators:
+        try:
+            raw = calibrators[bucket].transform(raw)
+        except Exception as e:
+            print(f"warning: bracket {bucket} calibrator failed ({e}); falling back to raw")
+    return [float(p) for p in raw]
 
 
 def _format_time(seconds: int) -> str:
     sign = "-" if seconds < 0 else ""
     s = abs(int(seconds))
     return f"{sign}{s // 60:02d}:{s % 60:02d}"
+
+
+def _replay_url(match_id: int, t_seconds: int) -> str:
+    """`dota2://` deep link that opens the replay at the given timestamp."""
+    return f"dota2://matchid={match_id}&matchtime={max(0, t_seconds)}"
 
 
 def _extract_decisions(
@@ -88,6 +127,9 @@ def _extract_decisions(
             out.append({"t": item["time"], "type": "item", "detail": f"Bought {KEY_ITEMS[key]}"})
         elif key == "smoke_of_deceit":
             out.append({"t": item["time"], "type": "smoke", "detail": "Bought Smoke (gank initiation)"})
+
+    for b in you.get("buyback_log") or []:
+        out.append({"t": b.get("time", 0), "type": "buyback", "detail": "Used buyback"})
 
     for w in you.get("obs_log") or []:
         out.append({"t": w.get("time", 0), "type": "ward_obs", "detail": "Placed observer ward"})
@@ -118,6 +160,48 @@ def _extract_decisions(
     return out
 
 
+def _cluster_deaths(decisions: list[dict], window_s: int = 30) -> list[dict]:
+    """Merge death decisions occurring within `window_s` of each other into one cluster.
+
+    Same fight = same penalty. Without this, dying 3 times in a 5v5 team fight gets
+    flagged as 3 separate leaks even though it was one bad call.
+    """
+    deaths = sorted([d for d in decisions if d["type"] == "death"], key=lambda d: d["t"])
+    others = [d for d in decisions if d["type"] != "death"]
+    if len(deaths) < 2:
+        return decisions
+
+    merged: list[dict] = []
+    cluster: list[dict] = []
+    for d in deaths:
+        if cluster and d["t"] - cluster[-1]["t"] <= window_s:
+            cluster.append(d)
+        else:
+            if cluster:
+                merged.append(_collapse(cluster))
+            cluster = [d]
+    if cluster:
+        merged.append(_collapse(cluster))
+    return others + merged
+
+
+def _collapse(cluster: list[dict]) -> dict:
+    if len(cluster) == 1:
+        return cluster[0]
+    enemies = sorted({d["detail"].replace("Died to ", "") for d in cluster})
+    enemies_str = (
+        ", ".join(enemies)
+        if len(enemies) <= 3
+        else f"{', '.join(enemies[:3])} +{len(enemies) - 3} more"
+    )
+    return {
+        "t": cluster[0]["t"],
+        "type": "death",
+        "detail": f"Died {len(cluster)}× in team fight (to {enemies_str})",
+        "cluster_size": len(cluster),
+    }
+
+
 def _score(decisions: list[dict], user_win_prob: list[float]) -> list[dict]:
     n = len(user_win_prob)
     for d in decisions:
@@ -130,16 +214,26 @@ def _score(decisions: list[dict], user_win_prob: list[float]) -> list[dict]:
     return decisions
 
 
-def _format_decision(d: dict) -> dict:
-    return {
+def _format_decision(d: dict, match_id: int) -> dict:
+    out = {
         "t": _format_time(d["t"]),
         "type": d["type"],
         "impact": d["impact"],
         "detail": d["detail"],
+        "replay_url": _replay_url(match_id, d["t"]),
     }
+    if d.get("cluster_size"):
+        out["cluster_size"] = d["cluster_size"]
+    return out
 
 
-def analyze(match_id: int, top_k: int = 5, min_impact: float = 0.005) -> dict:
+def analyze(
+    match_id: int,
+    account_id: int | None = None,
+    top_k: int = 5,
+    min_impact: float = 0.005,
+) -> dict:
+    aid = config.resolve_account_id(account_id)
     try:
         match = fetcher.fetch_match(match_id)
     except requests.HTTPError as e:
@@ -163,45 +257,53 @@ def analyze(match_id: int, top_k: int = 5, min_impact: float = 0.005) -> dict:
             "`request-parses` and try again in a few minutes"
         )
 
-    you = fetcher.your_player(match)
+    you = fetcher.player_for(match, aid)
     if not you:
-        raise SystemExit(
-            f"account_id {config.require_account_id()} is not in match {match_id}"
-        )
+        raise SystemExit(f"account_id {aid} is not in match {match_id}")
 
     user_team_is_radiant = (you.get("player_slot") or 0) < 128
     heroes_id_map = heroes_by_id()
     heroes_by_npc = _heroes_by_npc(heroes_id_map)
-    model = _load_model()
+    model, features, calibrators = _load_model()
 
     snaps = snapshots.extract(match)
     if not snaps:
         raise SystemExit(f"could not extract snapshots from match {match_id}")
 
-    radiant_wp = _win_prob_curve(model, snaps)
+    match_rank = fetcher.avg_rank_tier(match)
+    radiant_wp = _win_prob_curve(model, snaps, features, calibrators, match_rank)
     user_wp = radiant_wp if user_team_is_radiant else [1 - p for p in radiant_wp]
 
-    decisions = _extract_decisions(
+    raw_decisions = _extract_decisions(
         match, you, heroes_id_map, heroes_by_npc, user_team_is_radiant
     )
-    decisions = _score(decisions, user_wp)
-    scored = [d for d in decisions if abs(d["impact"]) >= min_impact]
-    leaks = sorted([d for d in scored if d["impact"] < 0], key=lambda d: d["impact"])[:top_k]
-    kept = sorted([d for d in scored if d["impact"] > 0], key=lambda d: d["impact"], reverse=True)[:top_k]
+    clustered = _cluster_deaths(raw_decisions, window_s=30)
+    scored = _score(clustered, user_wp)
+    filtered = [d for d in scored if abs(d["impact"]) >= min_impact]
+    leaks = sorted([d for d in filtered if d["impact"] < 0], key=lambda d: d["impact"])[:top_k]
+    kept = sorted([d for d in filtered if d["impact"] > 0], key=lambda d: d["impact"], reverse=True)[:top_k]
 
     return {
         "match_id": match_id,
+        "account_id": aid,
         "you": {
             "hero": heroes_id_map.get(you.get("hero_id"), {}).get("localized_name", "?"),
+            "hero_id": you.get("hero_id"),
             "slot": you.get("player_slot"),
             "team": "radiant" if user_team_is_radiant else "dire",
             "kda": f"{you.get('kills', 0)}/{you.get('deaths', 0)}/{you.get('assists', 0)}",
+            "lane_role": _LANE_ROLE.get(you.get("lane_role")) or "?",
             "result": "win" if bool(match["radiant_win"]) == user_team_is_radiant else "loss",
+        },
+        "match": {
+            "patch": match.get("patch"),
+            "avg_rank_tier": match_rank,
+            "calibrated": (match_rank // 10 if match_rank else None) in calibrators,
         },
         "duration_min": len(snaps),
         "win_prob_curve": [round(p, 3) for p in user_wp],
         "decisions": {
-            "biggest_leaks": [_format_decision(d) for d in leaks],
-            "kept_doing_this": [_format_decision(d) for d in kept],
+            "biggest_leaks":   [_format_decision(d, match_id) for d in leaks],
+            "kept_doing_this": [_format_decision(d, match_id) for d in kept],
         },
     }

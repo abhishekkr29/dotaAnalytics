@@ -12,7 +12,7 @@ A personal-scope Dota 2 Turbo decision analyzer that:
 ## Out of scope
 
 - Other game modes — only `game_mode = 23` / Turbo.
-- Multi-user / SaaS deployment. One account, runs locally.
+- ~~Multi-user / SaaS deployment.~~ **Phase 5a/5b done** — Steam OpenID multi-user is live (still self-hosted; SaaS deploy is `docs/COMMERCIAL.md` Phase A).
 - Real-time / live analysis. Match must be parsed first (post-game only).
 - Per-position role coaching. Decisions are scored regardless of role.
 - Ability usage, ward placements, smoke calls, pull/stack timing. v1 only covers item buys / deaths / kills / Roshan.
@@ -62,7 +62,12 @@ End-to-end validated on real user matches. The CLI surface (`docker compose run 
 | **3. Decision scorer** | **done — validated on 2 user matches** | `analyze` produces signed Δ-win-prob per decision. Validated against the two parsed matches in your recent history (win + loss); win curves and decision attribution track ground-truth outcomes. |
 | **3b. Coach (LLM review + session memory)** | **done — validated on 2 user matches** | Hybrid: rules pin facts → Claude phrases. Full per-player profiles (KDA / GPM / NW / lane / items with timings / farm snapshots), smoke timeline, win-prob curve, kill timeline. Output includes item-build prescription + farm critique + concrete counterfactuals. Cross-match pattern detection via `coach_memory.json`. Cost ~$0.03–0.05 per review on Sonnet 4.6. |
 | **4. UI (MVP)** | **done 2026-05-15** | Streamlit single-page app on `:8501` as a separate `web` service in docker-compose. Match-ID paste → auto-fetch → win-prob chart + leaks/kept decision cards → "Generate coach review" button → markdown render. Sidebar: DB status, val_auc, memory size, model-tier selector. CLI unaffected. |
-| **5. Improvements** | scoped, not started | See "Future work" below — grouped by area + tagged with rough effort. |
+| **5a. Multi-user foundation** | **done 2026-05-17** | DB: `users` + `user_matches` tables; per-user file layout (`profiles/`, `coach_memory/`, `reviews/<aid>/`). All module APIs thread `account_id`. CLI `--account` flag with env fallback. FastAPI `auth` service on `:8502` with Steam OpenID 2.0 → JWT handoff. Fernet encryption for BYO Anthropic keys. Cost tracking with daily cap (`DAILY_COST_CAP_CENTS`). Migration script for the single-user → multi-user move. |
+| **5b. UI multi-page + onboarding + cost dashboard** | **done 2026-05-17** | Streamlit split into `pages/`: Analyzer · History · Patterns · Reviews · Settings. Sign-in page on `/` handles Steam JWT handoff (or dev-env fallback). Sidebar component: account chip, daily/monthly spend, model picker, sign-out. Per-user onboarding card on `/` when no matches cached. Settings page: BYO key paste-validate-encrypt-store, BYO removal, usage stats. |
+| **5c. Analyzer improvements** | **done 2026-05-17** | Counterfactual baselines (per-rank-bucket × hero × item median timings, `data/baselines.json` via `build-baselines` CLI) · lane/role beat passed through analyze output · decision clustering (deaths within 30s merged into one team-fight entry) · buyback events as decisions · replay deep-links (`dota2://matchid&matchtime=`) per decision. Skipped: ability-level decisions, vision impact (coord analysis), Δwp confidence intervals. |
+| **5d. Coach improvements** | **done 2026-05-17** | Per-hero memory retrieval (separate prompt section for current-hero history) · per-matchup memory (cross-match recurring-enemy flags) · patch tagging on memory entries with auto-decay across patches · streaming output via `messages.stream()` (CLI `--stream` flag + Streamlit live-update). Skipped for now: semantic embeddings, pruning-by-relevance. |
+| **5e. Model improvements** | **done 2026-05-17** | Per-bracket isotonic calibration (`data/calibrators.joblib`, fitted post-train on val-fold predictions per rank bucket, skip <50 samples) · backward-compat in `analyze._load_model` (trims `FEATURE_COLS` to `n_features_in_`) · auto-retrain hint via `training-status` CLI + emitted by `refresh-parses` when ≥500 new parsed since last train · hyperparam `sweep` script over `max_depth × lr × n_estimators`. Background data accumulation continues via `scripts/collect_data.sh`. New snapshot features deferred (would require `snapshots --rebuild`). |
+| **5f. Validation + ops** | **done 2026-05-17** | pytest skeleton (30 tests across crypto / cost / auth / analyze / baselines / snapshots) · `docs/TROUBLESHOOTING.md` covering OpenDota / DB / Steam OpenID / Anthropic / model / Streamlit / smoke / migration warts · smoke test extended to 24 checks. |
 
 ## Validation plan — **done**
 
@@ -73,7 +78,7 @@ Checklist progress as of 2026-05-15:
 | 1. Enable *Expose Public Match Data* in Dota client | ✓ done (OpenDota now returns your matches via `/recentMatches`) |
 | 2. Play a few Turbo games | ✓ ~20 in recent history, 2 already parsed |
 | 3. OpenDota ingestion | ✓ working |
-| 4. Pipeline run (`bracket-fetch` → `request-parses` → `refresh-parses` → `snapshots` → `train`) | ✓ ran via `scripts/train_loop.sh`, 997 parsed matches accumulated |
+| 4. Pipeline run (`bracket-fetch` → `request-parses` → `refresh-parses` → `snapshots` → `train`) | ✓ originally via train_loop.sh (since superseded by `collect_data.sh` + `train_model.sh`); 997 parsed matches accumulated then refactored 2026-05-18 |
 | 5. `val_auc ≥ 0.78` | ✓ achieved 0.854 |
 | 6. `analyze` on played matches | ✓ ran on `8807224804` (win) and `8808440501` (loss) |
 | 7. Decisions match recall | ✓ win-prob curves and decision attribution tracked actual game outcomes |
@@ -108,8 +113,14 @@ Phase 4 (UI) remains deferred — CLI is sufficient and the validation effort co
 | Validation (wall-clock, mostly waiting for parses) | ~12 h spread over 1 day | done |
 | Hardening (cooldowns, retries, 429/5xx, explorer-lag workaround, auto-doc-sync) | ~4 h | done |
 | 4. UI (Streamlit MVP) | ~3 h | done |
+| 5a. Multi-user foundation + Steam OpenID + BYO key + cost gating | ~18 h | done 2026-05-17 |
+| 5b. UI multi-page + onboarding + cost dashboard | ~12 h | done 2026-05-17 |
+| 5c. Analyzer (counterfactual baselines, decision clustering, buybacks, replay links) | ~8 h | done 2026-05-17 |
+| 5d. Coach (per-hero/matchup memory, streaming, patch tagging) | ~7 h | done 2026-05-17 |
+| 5e. Model (per-bracket calibration, retrain trigger, sweep, backward-compat) | ~6 h | done 2026-05-17 |
+| 5f. Validation + ops (pytest, TROUBLESHOOTING.md) | ~5 h | done 2026-05-17 |
 
-Active dev time so far: ~43 h.
+Active dev time so far: ~99 h.
 
 ## OpenDota rate-limit considerations
 
@@ -140,7 +151,7 @@ If you upgrade to OpenDota premium ($5/mo), the limit goes to ~10,000 calls/day 
 8. **Coach output is non-deterministic.** Sonnet 4.6 will phrase the same findings differently across calls. The factual ground truth comes from `analyze()`, so the *content* is stable, but the prose isn't. Rerun if you want a different angle.
 9. **Coach prompt caching probably won't activate.** Sonnet 4.6's prompt-cache minimum is 2048 input tokens; system prompt is ~750 tokens. `cache_control` is in place but `cache_read_input_tokens` stays 0 until the prompt grows. Cost impact: minimal.
 10. **Saturated at ~600 matches with current features.** More training data alone won't move `val_auc` past ~0.86 — future gains require better features (see Future work → Model).
-11. **Coach memory is single-account.** History entries aren't keyed by account_id. Reviewing a friend's match would pollute your own memory.
+11. ~~Coach memory is single-account.~~ **Resolved in Phase 5a.** Each account has its own `data/coach_memory/<account_id>.json` file; reviewing another player's match writes to their memory file, not yours.
 
 ## Future work — roadmap
 
@@ -151,12 +162,12 @@ Grouped by area. Effort rough: **S** ≤2h, **M** ~half-day, **L** day+, **XL** 
 | Idea | Effort | Why |
 |---|---|---|
 | Switch hero columns to XGBoost categorical mode (`enable_categorical=True`) | S | Cleaner matchup splits; expected +0.005–0.015 `val_auc` |
-| **Counterfactual baselines** — per-(rank, hero, item) median purchase-time distributions | L | Lets coach say *"BKB at 17:30 is 3.5 min late — Crusader median for Storm is 14:00"*. Biggest single quality jump for coach prose. **Previously deferred; still the next big lever.** |
+| ~~**Counterfactual baselines**~~ — per-(rank, hero, item) median purchase-time distributions | — | **Done in 5c.1.** Builds with `build-baselines` CLI; coach loads and adds "vs bracket median" timing deltas to each KEY_ITEM the user bought. |
 | Lane-outcome features (LH/level diff at min 10) | M | New per-side aggregate features in snapshots |
 | Per-side net-worth time series | M | Currently we only have `gold_adv`; per-side curves would help fight-window detection |
 | Roshan aegis-holder feature | S | Boolean: which side currently holds Aegis (objective state) |
 | Item-build curve features (cumulative key items per side) | M | Captures "had BKB online" vs "still bracer-only" |
-| Calibration (`CalibratedClassifierCV` wrapper) | S | If Δ-scoring ever feels miscalibrated — not currently needed |
+| ~~Calibration~~ | — | **Done in 5e.4** via per-bracket isotonic regression (`data/calibrators.joblib`). |
 | Per-hero head model | XL | One classifier per played hero. Needs ~5× current data; probably not worth it |
 
 ### Decision types (analyze + coach)
@@ -164,16 +175,19 @@ Grouped by area. Effort rough: **S** ≤2h, **M** ~half-day, **L** day+, **XL** 
 | Idea | Effort | Why |
 |---|---|---|
 | Ability-level decisions (skill build inflections) | M | Currently skipped — too noisy per minute. Could surface "got ult late at level 8 instead of 6" |
-| Lane / role assignment as a beat | S | OpenDota provides `lane_role`; pass to coach for "you were in safe lane but farmed jungle" critiques |
+| ~~Lane / role assignment as a beat~~ | — | **Done in 5c.3** — passed through `analyze.you.lane_role` and used in coach prompt. |
 | Vision-coverage analysis (ward placements vs death locations) | L | Use `obs_log` + `kills_log` coordinates to flag "you died inside enemy vision" |
-| Buyback usage events | S | Each buyback is a decision worth scoring |
+| ~~Buyback usage events~~ | — | **Done in 5c.3.** |
 | Defensive Roshan / Aegis-snipe events | M | Currently we just count Roshan kills; add who-snatched-aegis context |
 
 ### Pipeline
 
 | Idea | Effort | Why |
 |---|---|---|
-| Auto-retrain trigger | S | Fire `train` automatically after N new parsed matches accumulate |
+| ~~Auto-retrain trigger~~ | — | **Done in 5e.2** — `training-status` CLI + `refresh-parses` emits a hint when ≥500 new parsed since last train. (Hint, not auto-fire — keeps train explicit.) |
+| **Steam Web API supplement for user-match discovery** | M (~3h) | Today we discover via `/explorer` SQL at the user's rank bracket — random matches, not the user's own. Steam Web API `GetMatchHistory(account_id)` returns the signed-in user's actual recent games. Add `fetcher.fetch_user_match_history(account_id)` so onboarding can show "here are your last 20 matches, pick one to analyze" on day one. Needs `STEAM_API_KEY` (free, register at steamcommunity.com/dev/apikey). **Does not replace OpenDota** — Steam returns end-of-game summary only, not the parsed timeline data the model needs. Hybrid: Steam for discovery + profile, OpenDota for parsed match JSON. See "Why not Steam Web API" note below. |
+| ~~`--rank` flag for bracket-fetch + multi-bracket bootstrap script~~ | — | **Done 2026-05-17/18.** `bracket-fetch --rank N` + `request-parses --rank-min/--rank-max` for per-bracket parse-queue targeting. Split into `scripts/collect_data.sh` (Phases 1–3, per-bracket stuck detection) and `scripts/train_model.sh` (Phase 4 artifacts) so collection and training can be iterated independently. `scripts/wipe_data.py --full` for factory reset. |
+| Live-game support via Steam Web API | XL | `GetTopLiveGame`, `GetLiveLeagueGames` + a per-second feature pipeline → real-time win-prob during a match. Big effort; covered also in "UI additions → Real-time win-prob during a game". Steam-API supplement makes this feasible without polling OpenDota's parse queue. |
 | OpenDota premium support | S | `OPENDOTA_API_KEY` env var injected as query param; would 5× the rate limit if user upgrades |
 | Patch-aware filtering | M | Tag matches with patch; auto-exclude pre-patch data after a major patch drop |
 | Match-search by hero / friend | M | Discover not just bracket matches but specific friends' games or matches involving a hero you want to study |
@@ -183,11 +197,11 @@ Grouped by area. Effort rough: **S** ≤2h, **M** ~half-day, **L** day+, **XL** 
 
 | Idea | Effort | Why |
 |---|---|---|
-| Streaming output | M | Use `messages.stream()` so the review prints as it generates. Useful on Opus (4–8 s latency) |
-| Multi-account memory | S | Key `coach_memory.json` history by `account_id` so you can review friends' matches without polluting yours |
-| Patch-aware memory | S | Tag entries with patch; auto-decay patterns from old patches |
+| ~~Streaming output~~ | — | **Done in 5d.2** — CLI `--stream` flag, Streamlit live-update placeholder. |
+| ~~Multi-account memory~~ | — | **Done in Phase 5a** — memory is now per-account at `data/coach_memory/<aid>.json`. |
+| ~~Patch-aware memory~~ | — | **Done in 5d.3** — memory entries tagged with patch; older-patch entries filtered out of prompt injection. |
 | Memory pruning by relevance | M | Keep entries that contributed to surfaced patterns longer than one-off games |
-| Replay-clip timestamps | S | Output deep-links to `dota2://` URLs for jumping into the replay at the decision moment |
+| ~~Replay-clip timestamps~~ | — | **Done in 5c.3** — each decision now has a `replay_url` (`dota2://matchid=…&matchtime=…`). |
 | Coach-driven retraining hint | M | If coach commentary repeatedly cites "model didn't capture X", surface a "consider retraining" recommendation |
 
 ### UI additions (Phase 4 MVP done — these are future enhancements)
@@ -198,7 +212,7 @@ Grouped by area. Effort rough: **S** ≤2h, **M** ~half-day, **L** day+, **XL** 
 | Match history browser | M | List of cached matches with filtering by date / hero / result. Click → load into analyzer. |
 | Coach review reader | S | Browse `data/reviews/*.md` files; filter by theme tags from memory. |
 | Pattern viewer | S | Render `data/coach_memory.json` as a heat-map / chart: "you die to X N% of the time in last 20 games". |
-| Live training-loop progress | M | Stream `train_loop.sh` progress into the UI rather than CLI. |
+| Live collection progress | M | Stream `collect_data.sh` progress into the UI rather than CLI. |
 | In-UI parse-request triggering | S | Buttons for `bracket-fetch` / `request-parses` / `refresh-parses` from the web. |
 | Real-time win-prob during a game | XL | Requires hooking into Steam live-match API + per-second feature pipeline. Big effort, real value. |
 | Coach review side-by-side comparison | M | Compare reviews of two matches (e.g. last loss vs last win on same hero). |
@@ -209,10 +223,18 @@ Grouped by area. Effort rough: **S** ≤2h, **M** ~half-day, **L** day+, **XL** 
 
 | Idea | Effort | Why |
 |---|---|---|
-| Unit tests for snapshots / decision extraction | M | Currently only smoke-tested. Pytest on a fixture match JSON would catch feature regressions |
+| ~~Unit tests for snapshots / decision extraction~~ | — | **Done in 5f.1.** 30 pytest cases covering analyze, snapshots, baselines, cost, crypto, auth. |
 | Per-decision evaluation against held-out matches | L | Validate "BKB +6.4% impact" against actual outcomes when other variables held constant |
 | Memory inspection CLI | S | `python -m app.cli memory --show` to print current `coach_memory.json` summary |
-| `TROUBLESHOOTING.md` doc | M | Once enough operational warts accumulate (e.g., 522s, OpenDota explorer staleness, parse queue stalls) |
+| ~~`TROUBLESHOOTING.md`~~ | — | **Done in 5f.2.** |
+
+### Why not Steam Web API (instead of OpenDota)
+
+Asked 2026-05-17. Recap: **Steam Web API returns match summaries (final KDA, GPM, items at end). OpenDota parses the `.dem` replay file and returns the per-minute timeline** (`radiant_gold_adv`, `purchase_log`, `kills_log`, `gold_t`/`lh_t`/`xp_t`, `obs_log`/`sen_log`, `objectives` with timestamps, `lane_role`, `buyback_log`). Our model, decision scorer, and coach all depend on the parsed timeline data — Steam alone is insufficient.
+
+Replacing OpenDota would mean parsing replays ourselves (~150 GB raw replays, JVM/Go parser runtime, ~16 h CPU per 1000 matches) — net-zero win.
+
+Steam Web API **is** worth adding as a **supplement** (logged as `Steam Web API supplement for user-match discovery` above) for fetching the signed-in user's own match history so onboarding can show analyzable games on day one. Does not change the OpenDota dependency.
 
 ### Skipped on purpose
 
@@ -223,4 +245,5 @@ Grouped by area. Effort rough: **S** ≤2h, **M** ~half-day, **L** day+, **XL** 
 | Pro-match analysis | Different decision distribution; would degrade personal-bracket signal |
 | Continuous deployment | Personal CLI tool — no service to deploy |
 | Telemetry / user analytics | Single-user; nothing to collect |
+| **Replacing OpenDota with self-parsed replays** | OpenDota does the .dem parsing for free. Self-parsing means JVM/Go runtime + 150 GB raw replays + ~16 h CPU per 1000 matches. Net-zero win — would just be rebuilding OpenDota inside the app. |
 - **Prompt-cache breakpoint past Sonnet 4.6's 2048-token minimum.** Once the system prompt grows (more rules, more style guidance, examples), caching will start activating; verify `usage.cache_read_input_tokens > 0` after the next prompt expansion.

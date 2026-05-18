@@ -44,7 +44,6 @@ CREATE TABLE IF NOT EXISTS snapshots (
 );
 CREATE INDEX IF NOT EXISTS idx_snapshots_avg_rank ON snapshots(avg_rank_tier);
 
--- Hero columns added in v2 — idempotent migrations for existing snapshots tables:
 ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS r_hero_1 SMALLINT;
 ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS r_hero_2 SMALLINT;
 ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS r_hero_3 SMALLINT;
@@ -55,6 +54,33 @@ ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS d_hero_2 SMALLINT;
 ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS d_hero_3 SMALLINT;
 ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS d_hero_4 SMALLINT;
 ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS d_hero_5 SMALLINT;
+
+CREATE TABLE IF NOT EXISTS users (
+    account_id              BIGINT PRIMARY KEY,
+    steam_id_64             BIGINT UNIQUE,
+    friend_code             TEXT,
+    rank_tier               INTEGER,
+    profile_json            JSONB,
+    anthropic_key_encrypted TEXT,
+    daily_cost_used_cents   INTEGER NOT NULL DEFAULT 0,
+    daily_cost_reset_at     TIMESTAMPTZ,
+    monthly_cost_used_cents INTEGER NOT NULL DEFAULT 0,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_users_steam_id ON users(steam_id_64);
+
+CREATE TABLE IF NOT EXISTS user_matches (
+    user_id   BIGINT  NOT NULL REFERENCES users(account_id) ON DELETE CASCADE,
+    match_id  BIGINT  NOT NULL REFERENCES matches(match_id) ON DELETE CASCADE,
+    slot      SMALLINT,
+    hero_id   INTEGER,
+    kills     INTEGER,
+    deaths    INTEGER,
+    assists   INTEGER,
+    PRIMARY KEY (user_id, match_id)
+);
+CREATE INDEX IF NOT EXISTS idx_user_matches_user ON user_matches(user_id);
 """
 
 

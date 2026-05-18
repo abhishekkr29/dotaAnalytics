@@ -1,6 +1,6 @@
 # API Reference
 
-All commands are invoked as:
+All CLI commands are invoked as:
 
 ```bash
 docker compose run --rm app python -m app.cli <subcommand> [args]
@@ -8,22 +8,25 @@ docker compose run --rm app python -m app.cli <subcommand> [args]
 
 Schema bootstrap runs on every invocation — no separate init step.
 
+**Account resolution.** Subcommands that operate on a user accept `--account <id>`. If omitted, they fall back to `$ACCOUNT_ID` from `.env` (this preserves the original single-user workflow). The web UI sets the account via Steam sign-in.
+
 ## CLI subcommands
 
-### `account`
+### `account [--account ID]`
 
-Print the resolved account ID from `.env`. Sanity-check that env wiring is working.
+Print the resolved account id. Sanity-check env / flag wiring.
 
 **Output:** `account_id: <int>`
 
 ---
 
-### `profile [--refresh]`
+### `profile [--account ID] [--refresh]`
 
-Fetch and cache your OpenDota profile. Caches to `data/profile.json`; subsequent runs read from disk unless `--refresh` is passed.
+Fetch and cache a user's OpenDota profile. Caches to `data/profiles/<account_id>.json`.
 
 **Args:**
-- `--refresh` — bypass disk cache, force re-fetch.
+- `--account ID` — account to fetch for. Defaults to `$ACCOUNT_ID`.
+- `--refresh` — bypass disk cache.
 
 **Output (JSON):**
 ```json
@@ -35,268 +38,185 @@ Fetch and cache your OpenDota profile. Caches to `data/profile.json`; subsequent
 }
 ```
 
-**Errors:** `SystemExit` if `ACCOUNT_ID` env var is unset or OpenDota has no `rank_tier` for the account.
+**Errors:** `SystemExit` if no account id was resolvable, or OpenDota has no `rank_tier` for it.
 
 ---
 
-### `bracket-fetch --limit N --window W`
+### `bracket-fetch [--account ID] [--rank N] [--limit N] [--window W]`
 
-Discover Turbo matches at your rank bracket via a single `/explorer` JOIN that returns ID + summary + parse-status in one call (3N → ~1N optimization). Match JSONs are fetched lazily — only for matches that are *already parsed*. Unparsed matches are recorded as DB rows so `request-parses` can queue them.
+Discover Turbo matches at a rank bracket via a single `/explorer` JOIN (ID + summary + parse-status in one call). Match JSONs are fetched lazily — only for already-parsed matches. Unparsed matches are recorded as DB rows so `request-parses` can queue them.
 
 **Args:**
-- `--limit N` (default `500`) — how many match IDs to discover.
-- `--window W` (default `10`) — rank tier window (e.g., rank 43, W=10 → 33..53).
+- `--account ID` — used to populate `user_matches` if the signed-in user appears in any discovered match.
+- `--rank N` — target rank_tier (e.g., `15` for Herald 5). Defaults to the signed-in account's own rank. Use to bootstrap training data across multiple brackets — see `scripts/bootstrap_brackets.sh`.
+- `--limit N` (default 500), `--window W` (default 10).
 
 **Output (JSON):**
 ```json
 {
-  "rank_tier": 43,
-  "window": 10,
-  "discovered": 500,
-  "parsed_at_discovery": 73,
-  "json_fetched": 73,
-  "api_calls": 74
-}
-```
-
-`api_calls = 1 explorer call + N_parsed JSON fetches`. Compared to the previous version (`1 + N` regardless of parse status), this saves ~N_unparsed calls per cycle.
-
----
-
-### `match-fetch <match_id>`
-
-Fetch one match by ID, cache the JSON, upsert a summary row.
-
-**Args:**
-- `match_id` (positional, int) — OpenDota match ID.
-
-**Output (JSON):**
-```json
-{
-  "match_id": 8810012394,
-  "parsed": false,
-  "duration": 1144,
-  "avg_rank_tier": 41,
-  "radiant_win": true
+  "rank_tier": 43, "window": 10,
+  "discovered": 500, "parsed_at_discovery": 73,
+  "json_fetched": 73, "api_calls": 74
 }
 ```
 
 ---
 
-### `request-parses --limit N`
+### `match-fetch [--account ID] <match_id>`
 
-POST `/request/{id}` for unparsed matches in the DB, queueing them for OpenDota's parse service. Skips any match that was already parse-requested within the last 24 hours (cooldown via `matches.parse_requested_at`) to avoid burning API quota on duplicate submissions.
-
-429s are retried with exponential backoff up to 6 attempts (~63 s total per match); 5xx / Cloudflare 52x errors also retry. After exhausting retries, the match is skipped via `HTTPError` and the loop continues.
-
-**Args:**
-- `--limit N` (default `200`) — how many eligible (not in cooldown) unparsed matches to submit.
-
-**Output (JSON):**
-```json
-{
-  "unparsed_in_db": 1000,
-  "in_cooldown": 970,
-  "eligible": 30,
-  "requested": 30,
-  "failed": 0
-}
-```
-
-- `unparsed_in_db`: total unparsed rows in `matches` table
-- `in_cooldown`: skipped due to `parse_requested_at < NOW() - 24h` not yet elapsed
-- `eligible`: candidates after cooldown filter, capped at `--limit`
-- `requested` / `failed`: successful and failed POSTs
+Fetch one match, cache JSON, upsert into `matches`. If `--account` is given and that user appears in `players[]`, also writes a `user_matches` row.
 
 ---
 
-### `refresh-parses --limit N`
+### `request-parses [--limit N]`
 
-Per-match `/matches/{id}` re-fetch for unparsed DB matches. Each fetch updates `matches.parsed` if the JSON now has `version` set. Ordering: oldest `parse_requested_at` first (most likely to have completed).
+POST `/request/{id}` for unparsed matches in the DB. Skips any match parse-requested within the last 24h (`matches.parse_requested_at` cooldown). **Account-agnostic** — operates on the shared `matches` table.
 
-Why per-match rather than a batched `/explorer` query: OpenDota's `matches` SQL table on `/explorer` lags behind actual parse state visible via `/matches/{id}` (sometimes by hours). The earlier batched approach silently missed parsed matches. Per-match is slower but reliable.
+429s and 5xx/Cloudflare 52x retry with exponential backoff (~63s total per match).
 
-429 / 5xx retries on each call (same retry logic as `_get`).
+---
 
-**Args:**
-- `--limit N` (default `200`) — how many unparsed matches to re-check per invocation.
+### `refresh-parses [--account ID] [--limit N]`
 
-**Output (JSON):**
-```json
-{
-  "unparsed_in_db": 200,
-  "checked": 199,
-  "newly_parsed": 199,
-  "api_calls": 199
-}
-```
+Per-match `/matches/{id}` re-fetch for unparsed DB matches. Updates `matches.parsed` when version is now set. Ordered oldest-`parse_requested_at` first. If `--account` is given, populates `user_matches` for any rows where the user appears in `players[]`.
 
-- `unparsed_in_db`: rows queried from the DB (capped at `--limit`)
-- `checked`: actually re-fetched (some may have been skipped on persistent errors)
-- `newly_parsed`: count whose `is_parsed(match)` returned true after re-fetch
-- `api_calls`: total OpenDota calls made (~equals `checked`)
-
-Typical workflow: `request-parses`, wait 10–30 min, `refresh-parses`, repeat. With 24h cooldown on `request-parses`, the inner loop becomes mostly `refresh-parses` after the first cycle.
+Why per-match rather than batched `/explorer`: OpenDota's `matches` SQL table lags actual parse state visible via `/matches/{id}` (sometimes hours). The earlier batched approach silently missed parsed matches. Per-match is slower but reliable.
 
 ---
 
 ### `snapshots [--rebuild]`
 
-Extract per-minute training rows from parsed matches in the disk cache; insert into the `snapshots` table.
-
-**Args:**
-- `--rebuild` (default `false`) — re-process all parsed matches (default: only matches that don't yet have any snapshot rows).
-
-**Output (JSON):**
-```json
-{
-  "matches_processed": 250,
-  "snapshot_rows": 5234
-}
-```
+Account-agnostic. Extract per-minute training rows from parsed matches in the disk cache; insert into `snapshots`.
 
 ---
 
 ### `train [--n-estimators N]`
 
-Train the XGBoost win-prob classifier on snapshots. Saves the model and metrics.
+Account-agnostic. Train the XGBoost win-prob classifier (one shared model across all users — rank-conditioned via `avg_rank_tier`).
 
-**Args:**
-- `--n-estimators N` (default `400`) — boosting rounds (early stopping at 20 rounds without improvement).
-
-**Output (JSON):** identical content also written to `data/model_meta.json`:
-```json
-{
-  "n_rows": 5234,
-  "n_matches": 250,
-  "n_train_rows": 4187,
-  "n_val_rows": 1047,
-  "val_log_loss": 0.523,
-  "val_auc": 0.812,
-  "best_iteration": 137,
-  "feature_cols": ["minute", "gold_adv", "xp_adv", "...", "r_hero_1", "...", "d_hero_5"]
-}
-```
-
-Features: 9 base game-state features + 10 hero ID features (5 radiant + 5 dire, sorted within team for permutation stability).
-
-Artifact saved to `data/turbo_winprob.json` (XGBoost native JSON format).
-
-**Errors:** `SystemExit` if no snapshot rows in DB, or fewer than 20 distinct matches.
+Saves to `data/turbo_winprob.json` + `data/model_meta.json`. Auto-syncs `docs/TRAINING.md` history.
 
 ---
 
 ### `refresh-doc`
 
-Re-syncs the `<!-- AUTO:current-model -->` and `<!-- AUTO:run-history -->` blocks in `docs/TRAINING.md` from the existing `data/model_meta.json`. No retraining, no API calls. Useful if the doc and the JSON got out of sync (e.g., manual edit).
+Re-syncs `docs/TRAINING.md` from existing `data/model_meta.json`. No retrain, no API calls.
+
+---
+
+### `training-status`
+
+Show how many new parsed matches have accumulated since the last `train` invocation. Used as a heuristic to know when to retrain.
 
 **Output (JSON):**
 ```json
 {
-  "doc": "/code/docs/TRAINING.md",
-  "source": "/code/data/model_meta.json",
-  "val_auc": 0.8544
+  "trained": true,
+  "trained_at": "2026-05-15T...",
+  "parsed_at_train": 997,
+  "current_parsed": 1542,
+  "delta": 545
 }
 ```
 
-**Errors:** `SystemExit` if `data/model_meta.json` doesn't exist yet (run `train` once first).
+Hint also emitted automatically by `refresh-parses` (in its result JSON) once the delta crosses 500.
 
 ---
 
-### `analyze <match_id> [--top-k K] [--min-impact x]`
+### `build-baselines`
 
-Decision types extracted (v2):
-- `item` — key item purchases (BKB, Aghs, Pipe, Manta, etc. from `KEY_ITEMS`)
-- `death` — your hero killed by opponent
-- `kill` — you killed an opponent hero
-- `roshan` — Roshan killed by your team
-- `smoke` — you bought Smoke of Deceit (gank initiation)
-- `ward_obs` — you placed an observer ward
-- `ward_sen` — you placed a sentry ward
+Scan every cached parsed match JSON, compute per-`(rank_bucket, hero_id, item_key)` median purchase time. Write `data/baselines.json`. Used by `coach` to add "BKB at 17:30 vs bracket median 14:00" advice. Re-run after each batch of parsed matches accumulates.
 
+Noise floor: 5 samples per bucket-hero-item. Below that, the bucket is dropped.
 
+**Output (JSON):**
+```json
+{
+  "matches_scanned": 1542,
+  "buckets_published": 1842,
+  "buckets_dropped_below_noise_floor": 4291,
+  "path": "/code/data/baselines.json"
+}
+```
 
-Run the full inference pipeline for one match. Requires:
-- A trained model at `data/turbo_winprob.json`.
-- The match must be Turbo, parsed, and contain your `account_id` in `players[]`.
+---
 
-**Args:**
-- `match_id` (positional, int).
-- `--top-k K` (default `5`) — how many decisions in each of "leaks" and "kept doing this".
-- `--min-impact x` (default `0.005`) — drop decisions whose `|Δ win-prob| < x`.
+### `sweep [--out PATH]`
+
+Run a small XGBoost hyperparameter sweep (`max_depth × learning_rate × n_estimators`). Prints results; **does not save the model**. Use the winning config with `train --n-estimators N` (other params are not yet flag-exposed in `train`; edit `app/train.py` or open a focused PR).
+
+**Args:** `--out PATH` — optional path to write the full results JSON.
+
+---
+
+### `analyze [--account ID] <match_id> [--top-k K] [--min-impact x]`
+
+Full inference pipeline for one match. Requires: trained model, match is Turbo + parsed, user is in `players[]`.
+
+**Decision types:** `item · death · kill · roshan · smoke · ward_obs · ward_sen`.
 
 **Output (JSON):**
 ```json
 {
   "match_id": 8810000000,
-  "you": {
-    "hero": "Storm Spirit",
-    "slot": 3,
-    "team": "radiant",
-    "kda": "9/4/12",
-    "result": "loss"
-  },
+  "account_id": 446619601,
+  "you": {"hero": "Storm Spirit", "slot": 3, "team": "radiant", "kda": "9/4/12", "result": "loss"},
   "duration_min": 22,
   "win_prob_curve": [0.500, 0.512, 0.498],
   "decisions": {
-    "biggest_leaks": [
-      {"t": "08:14", "type": "death", "impact": -0.041, "detail": "Died to Pudge"}
-    ],
-    "kept_doing_this": [
-      {"t": "14:32", "type": "item", "impact": 0.064, "detail": "Bought BKB"}
-    ]
+    "biggest_leaks":   [{"t": "08:14", "type": "death", "impact": -0.041, "detail": "Died to Pudge"}],
+    "kept_doing_this": [{"t": "14:32", "type": "item",  "impact":  0.064, "detail": "Bought BKB"}]
   }
 }
 ```
-
-**Errors:**
-- Non-Turbo match
-- Match not yet parsed
-- Account ID not in `players[]`
-- No model at `MODEL_PATH`
-- Match not found (HTTP 404 from OpenDota)
 
 ---
 
-### `coach <match_id> [--model {haiku,sonnet,opus}] [--top-k K] [--min-impact x]`
+### `coach [--account ID] <match_id> [--model {haiku,sonnet,opus}] [--top-k K] [--min-impact x] [--stream]`
 
-Generate a natural-language coach review for one match via Claude. Internally runs `analyze()` for the structured findings, gathers raw match context (hero composition, patch, rank), applies heuristic narrative beats (phase grouping + recurring patterns), then asks Claude to write the review.
+Generate a markdown coach review via Claude. Writes to `data/reviews/<account_id>/<match_id>.md`.
 
-For prompt design, session memory schema, theme extraction rules, tuning knobs, gotchas, and future work, see [COACH.md](COACH.md).
+**Key resolution.** If the user has a BYO key saved (in the `users` table), it's used. Otherwise the server-side `ANTHROPIC_API_KEY` is used, subject to the per-user daily cap (`DAILY_COST_CAP_CENTS`).
 
-**Requires:**
-- `ANTHROPIC_API_KEY` in `.env` (the file is gitignored — never commit a key).
-- Same prerequisites as `analyze`: trained model, parsed Turbo match, you in `players[]`.
-
-**Args:**
-- `match_id` (positional, int).
-- `--model {haiku,sonnet,opus}` (default `sonnet`) — selects the Claude model. Aliases map to `claude-haiku-4-5`, `claude-sonnet-4-6`, `claude-opus-4-7`.
-- `--top-k K` (default `6`) — passed through to `analyze`.
-- `--min-impact x` (default `0.005`) — passed through to `analyze`.
-
-**Output:** writes markdown to `data/reviews/<match_id>.md`, prints a small JSON receipt to stdout:
-
+**Output (JSON receipt):**
 ```json
 {
   "match_id": 8810000000,
+  "account_id": 446619601,
   "model": "claude-sonnet-4-6",
-  "review_path": "/code/data/reviews/8810000000.md",
-  "usage": {
-    "input_tokens": 1842,
-    "output_tokens": 612,
-    "cache_read_input_tokens": 0,
-    "cache_creation_input_tokens": 0
-  }
+  "review_path": "/code/data/reviews/446619601/8810000000.md",
+  "memory_entries": 3,
+  "byo_key": false,
+  "cost_cents": 4,
+  "usage": {"input_tokens": 1842, "output_tokens": 612, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
 }
 ```
 
-**Session memory + cost details:** see [COACH.md](COACH.md) — schema, retention/injection counts, theme extraction, per-tier cost breakdown.
+`--stream` prints chunks to stdout as Claude generates them (useful on Opus); the JSON receipt still prints at the end.
 
-**Errors:**
-- `ANTHROPIC_API_KEY` unset
-- `AuthenticationError` — bad key
-- `RateLimitError` — Anthropic rate limit hit
-- All `analyze` errors (not parsed, not in match, etc.)
+**Errors:** all of `analyze`'s errors; `cost.BudgetExceeded` if the daily cap is hit on the server key; auth/rate-limit/API errors from Anthropic.
+
+---
+
+## `app.crypto` (helper)
+
+```bash
+docker compose run --rm app python -m app.crypto gen
+```
+
+Prints a fresh Fernet key. Paste it into `.env` as `FERNET_KEY=...`. Required for BYO Anthropic-key storage (the encryption-at-rest mechanism).
+
+---
+
+## Auth service (`app.auth`, FastAPI on :8502)
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/healthz` | `{"ok": true, "service": "auth"}` |
+| `GET` | `/auth/steam/login` | 302 → Steam OpenID checkid_setup URL |
+| `GET` | `/auth/steam/callback` | Verifies the Steam assertion, upserts `users` row, mints JWT, 302s to `WEB_PUBLIC_URL/?token=…` |
+
+JWTs are HMAC-SHA256 signed with `JWT_SECRET`. Payload: `{"account_id": int, "exp": int}`. TTL = 7 days. Validated by `app.auth.verify_jwt()` (used by Streamlit on each page load).
 
 ---
 
@@ -306,82 +226,105 @@ For prompt design, session memory schema, theme extraction rules, tuning knobs, 
 
 | Function | Purpose |
 |---|---|
-| `fetch_profile(force=False) -> dict` | Profile JSON (cached on disk) |
-| `your_rank_tier() -> int` | Your `rank_tier` from the cached profile |
+| `fetch_profile(account_id, force=False) -> dict` | Profile JSON (cached to `profiles/<id>.json`) |
+| `rank_tier_for(account_id) -> int` | Rank from the cached profile |
 | `fetch_match(match_id, force=False) -> dict` | Full match JSON (cached) |
+| `player_for(match, account_id) -> dict` | `players[i]` matching that account, or `{}` |
+| `is_parsed(match) -> bool` | True if `version` + `gold_t` arrays present |
+| `avg_rank_tier(match) -> int \| None` | Mean of `players[i].rank_tier` |
 | `request_parse(match_id) -> None` | POST `/request/{id}` |
-| `is_parsed(match: dict) -> bool` | True if `version` set + `gold_t` arrays present |
-| `avg_rank_tier(match: dict) -> int \| None` | Mean of `players[i].rank_tier` |
-| `your_player(match: dict) -> dict` | `players[i]` with `account_id == you`, or `{}` |
-| `bracket_match_ids(rank_tier, window, limit) -> list[int]` | Discovery via `/explorer` |
-| `sync_match(match_id) -> dict` | Fetch + upsert one match |
-| `sync_bracket_matches(limit, window) -> dict` | Discover + fetch a bracket batch |
-| `request_parses(limit) -> dict` | Submit parses for unparsed matches in DB |
-| `refresh_parses(limit) -> dict` | Re-fetch unparsed matches |
-| `upsert_match(conn, match) -> None` | INSERT … ON CONFLICT UPDATE |
-
-### `app.snapshots`
-
-| Function | Purpose |
-|---|---|
-| `extract(match: dict) -> list[dict]` | Per-minute snapshot rows in memory |
-| `build_all(only_missing=True) -> dict` | Process parsed matches in DB into `snapshots` table |
-
-### `app.train`
-
-| Function | Purpose |
-|---|---|
-| `train(n_estimators=400) -> dict` | Group-aware train/val, fit XGBoost, save artifact + metrics |
-| `FEATURE_COLS` | List of feature column names (shared with inference) |
+| `sync_match(match_id, account_id=None) -> dict` | Fetch + upsert. Populates `user_matches` if `account_id` given. |
+| `sync_bracket_matches(account_id, limit, window) -> dict` | Discover + fetch a bracket batch |
+| `request_parses(limit) -> dict` | Submit parses, with cooldown |
+| `refresh_parses(limit, account_id=None) -> dict` | Re-fetch unparsed, optionally writing `user_matches` |
+| `upsert_match(conn, match, account_id=None) -> None` | INSERT…ON CONFLICT UPDATE; optionally writes `user_matches` |
 
 ### `app.analyze`
 
 | Function | Purpose |
 |---|---|
-| `analyze(match_id, top_k=5, min_impact=0.005) -> dict` | Full inference pipeline for one match |
-| `heroes_by_id() -> dict[int, dict]` | Cached `/heroes` lookup (id → hero dict) — shared with `coach` |
-| `KEY_ITEMS` | Curated mapping `npc item key → display name` |
+| `analyze(match_id, account_id=None, top_k=5, min_impact=0.005) -> dict` | Inference pipeline. `account_id` falls back to `$ACCOUNT_ID`. |
+| `heroes_by_id() -> dict[int, dict]` | Cached `/heroes` lookup |
+| `KEY_ITEMS` | `{npc_item_key: display_name}` |
 
 ### `app.coach`
 
 | Function | Purpose |
 |---|---|
-| `coach(match_id, model="sonnet", top_k=6, min_impact=0.005) -> dict` | Run `analyze`, build heuristic beats, call Claude, write markdown |
-| `MODEL_ALIASES` | `{haiku,sonnet,opus}` → exact Claude model ID |
-| `SYSTEM_PROMPT` | The coach system prompt (cacheable via top-level `cache_control`) |
+| `coach(match_id, account_id=None, model="sonnet", on_chunk=None, …) -> dict` | Full coach run. Resolves key, checks budget, charges. If `on_chunk` given, streams via `messages.stream()` and calls the callback per text chunk. |
+| `MODEL_ALIASES` | `{haiku,sonnet,opus}` → exact Claude model id |
+| `SYSTEM_PROMPT` | Coach system prompt |
+
+### `app.baselines`
+
+| Function | Purpose |
+|---|---|
+| `build() -> dict` | Scan cached match JSONs, compute medians, write `data/baselines.json` |
+| `load() -> dict` | Read `data/baselines.json` (or empty stub) |
+| `lookup(baselines, rank_tier, hero_id, item_key) -> dict \| None` | Resolve a specific baseline |
+| `format_delta(observed_seconds, baseline) -> str` | Format the prompt-ready "observed X vs median Y" string |
+
+### `app.cost`
+
+| Function | Purpose |
+|---|---|
+| `current_usage(account_id) -> dict` | `{daily_cents, monthly_cents, cap_cents}` (resets daily counter past UTC midnight) |
+| `check_budget(account_id, use_byo_key) -> None` | Raises `BudgetExceeded` if over cap (server key only) |
+| `charge(account_id, cents, use_byo_key) -> None` | Records a charge — daily counter advances only for server-key calls |
+| `estimate_cents(model_id, usage) -> int` | Convert Anthropic `usage` dict to cents |
+
+### `app.crypto`
+
+| Function | Purpose |
+|---|---|
+| `encrypt_key(plaintext) -> str` | Fernet-encrypt a BYO API key |
+| `decrypt_key(ciphertext) -> str` | Decrypt at use time |
+| `generate_key() -> str` | New Fernet key (for `.env`) |
+
+### `app.auth`
+
+| Function | Purpose |
+|---|---|
+| `make_jwt(account_id) -> str` | Mint a signed token |
+| `verify_jwt(token) -> dict \| None` | Decode & validate; `None` on failure |
 
 ### `app.db`
 
 | Function | Purpose |
 |---|---|
-| `connect() -> psycopg.Connection` | autocommit=True connection |
-| `ensure_schema() -> None` | Idempotent schema bootstrap |
-| `SCHEMA_SQL` | Authoritative schema (matches + snapshots) |
+| `connect() -> psycopg.Connection` | autocommit=True |
+| `ensure_schema() -> None` | Idempotent bootstrap of all tables (matches, snapshots, users, user_matches) |
+| `SCHEMA_SQL` | Authoritative schema |
 
 ### `app.config`
 
 | Symbol | Purpose |
 |---|---|
-| `ACCOUNT_ID` | `int \| None` — from env |
-| `DATABASE_URL` | from env, default for local dev |
-| `OPENDOTA_BASE` | `"https://api.opendota.com/api"` |
-| `TURBO_GAME_MODE` | `23` |
-| `DATA_DIR`, `MATCHES_DIR`, `PROFILE_PATH`, `MODEL_PATH` | paths |
-| `require_account_id() -> int` | raises if unset |
+| `ACCOUNT_ID` | `int \| None` — single-user CLI fallback |
+| `DATABASE_URL`, `DATA_DIR`, `MATCHES_DIR`, `MODEL_PATH` | paths / connection |
+| `PROFILES_DIR`, `MEMORY_DIR`, `REVIEWS_DIR` | per-user roots |
+| `profile_path(aid)`, `memory_path(aid)`, `reviews_dir_for(aid)` | per-user path helpers |
+| `JWT_SECRET`, `FERNET_KEY` | auth + crypto |
+| `DAILY_COST_CAP_CENTS` | server-key cap (default 25¢/day) |
+| `STEAM_OPENID_REALM`, `AUTH_PUBLIC_URL`, `WEB_PUBLIC_URL` | Steam OpenID + redirects |
+| `ANTHROPIC_API_KEY` | server-side default key |
+| `OPENDOTA_API_KEY` | Premium tier key; auto-injected as `?api_key=…` on every OpenDota call when set. Empty → free tier. |
+| `resolve_account_id(explicit=None) -> int` | flag-or-env resolver used by CLI + module APIs |
+| `require_account_id() -> int` | back-compat alias for the env-only resolver |
 
 ## OpenDota endpoints used
 
 | Method | Path | Used by |
 |---|---|---|
 | GET | `/players/{account_id}` | `profile` |
-| GET | `/matches/{match_id}` | `bracket-fetch`, `match-fetch`, `refresh-parses`, `analyze` |
+| GET | `/matches/{match_id}` | `bracket-fetch`, `match-fetch`, `refresh-parses`, `analyze`, `coach` |
 | GET | `/explorer?sql=...` | `bracket-fetch` (discovery) |
 | GET | `/heroes` | `analyze`, `coach` (one-time, cached) |
 | POST | `/request/{match_id}` | `request-parses` |
 
-The `coach` command additionally calls Anthropic's `messages.create` endpoint via the `anthropic` SDK.
+`coach` additionally calls Anthropic `messages.create`. `auth` calls Steam OpenID `https://steamcommunity.com/openid/login` for the `check_authentication` verify.
 
-All GETs go through the retrying client in `app/fetcher.py:_get`, which honors 429 via exponential backoff.
+All GETs go through `app.fetcher._get`'s retrying client (429 + 5xx exponential backoff).
 
 ## Exit codes
 
@@ -389,6 +332,4 @@ All GETs go through the retrying client in `app/fetcher.py:_get`, which honors 4
 |---|---|
 | 0 | Success |
 | 1 | argparse usage error |
-| 2 | `SystemExit` from a guard: match not parsed, model missing, account not in match, match not found on OpenDota, `ANTHROPIC_API_KEY` unset, Anthropic auth/rate-limit/API error |
-
-Errors that aren't expected (HTTP 500s, DB connection failures) bubble up as Python tracebacks with non-zero exit.
+| 2 | `SystemExit` from a guard: no account resolved, match not parsed/Turbo/in your games, model missing, match not found, no Anthropic key + no BYO, budget exhausted, auth/rate-limit error |

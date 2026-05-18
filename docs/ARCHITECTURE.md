@@ -3,54 +3,70 @@
 ## High-level diagram
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  docker compose                                                 │
-│                                                                 │
-│   ┌──────────────────────┐         ┌──────────────────────┐     │
-│   │  app  (python 3.12)  │         │  db  (postgres 16)   │     │
-│   │                      │         │                      │     │
-│   │  CLI subcommands     │◄───────►│  matches             │     │
-│   │  · fetch / discover  │         │  snapshots           │     │
-│   │  · train             │         │                      │     │
-│   │  · analyze           │         └──────────────────────┘     │
-│   │  · coach   ──────────┼──────► Anthropic Claude API          │
-│   │  · …                 │                                      │
-│   └──────────┬───────────┘                                      │
-│              │                                                  │
-│              │ shared volume                                    │
-│              ▼                                                  │
-│   ┌──────────────────────┐                                      │
-│   │  ./data              │                                      │
-│   │  · matches/*.json    │  raw match JSON cache (on disk)      │
-│   │  · profile.json      │                                      │
-│   │  · heroes.json       │                                      │
-│   │  · turbo_winprob.json│  trained model artifact              │
-│   │  · model_meta.json   │  training metrics                    │
-│   └──────────────────────┘                                      │
-└─────────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-                   ┌─────────────────┐
-                   │  OpenDota API   │
-                   │ (free tier)     │
-                   └─────────────────┘
+┌────────────────────────────────────────────────────────────────────────┐
+│  docker compose                                                        │
+│                                                                        │
+│   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐               │
+│   │  web  (8501) │   │ auth  (8502) │   │  app  (CLI)  │               │
+│   │  Streamlit   │   │  FastAPI     │   │  argparse    │               │
+│   │  multi-page  │   │  Steam OIDC  │   │  one-shot    │               │
+│   └──────┬───────┘   └──────┬───────┘   └──────┬───────┘               │
+│          │  JWT             │                   │                      │
+│          └─────────┬────────┘                   │                      │
+│                    ▼                            ▼                      │
+│             ┌──────────────────────────────────────────┐               │
+│             │             db  (postgres 16)            │               │
+│             │  matches · snapshots · users · u_matches │               │
+│             └──────────────────────────────────────────┘               │
+│                                                                        │
+│                       shared volume                                    │
+│                            ▼                                           │
+│   ┌──────────────────────────────────────────────────────────┐         │
+│   │  ./data                                                  │         │
+│   │  · matches/<match_id>.json    raw match JSON cache       │         │
+│   │  · profiles/<account_id>.json per-user profile cache     │         │
+│   │  · coach_memory/<aid>.json    per-user coach memory      │         │
+│   │  · reviews/<aid>/<mid>.md     per-user markdown reviews  │         │
+│   │  · heroes.json                hero metadata              │         │
+│   │  · turbo_winprob.json         shared model               │         │
+│   │  · model_meta.json            training metrics           │         │
+│   └──────────────────────────────────────────────────────────┘         │
+└────────────────────────────────────────────────────────────────────────┘
+       │                              │
+       ▼                              ▼
+┌────────────────┐            ┌────────────────────┐
+│  OpenDota API  │            │  Anthropic API     │
+│  (free tier)   │            │  (BYO or server)   │
+└────────────────┘            └────────────────────┘
+              ▲
+              │ Steam OpenID 2.0 (from `auth`)
+       ┌──────────────┐
+       │  Steam       │
+       │  Community   │
+       └──────────────┘
 ```
 
-Two services, one shared volume, one external dependency (OpenDota's public API).
+Four services (db / app / auth / web), one shared volume, three external dependencies (OpenDota, Anthropic, Steam OpenID).
 
 ## Module breakdown
 
 | Module | Purpose |
 |---|---|
-| `app/config.py` | Reads env (`ACCOUNT_ID`, `DATABASE_URL`, `DATA_DIR`), exposes constants and `require_account_id()` |
-| `app/db.py` | Postgres connection helper + idempotent `ensure_schema()` — single source of truth for schema |
-| `app/fetcher.py` | OpenDota HTTP client with 429 retry. Profile, bracket discovery, match fetching, parse requests/refreshes, DB upsert |
-| `app/snapshots.py` | Pure transform: parsed match JSON → list of per-minute snapshot dicts. Also writes them to the `snapshots` table |
-| `app/train.py` | Loads snapshots, group-aware train/val split, fits XGBoost classifier, saves model + metrics |
-| `app/analyze.py` | Loads a single match + model, computes win-prob curve, extracts and scores candidate decisions |
-| `app/coach.py` | Hybrid layer on top of `analyze`: rule-based narrative beats + Claude (via `anthropic` SDK) to synthesize a markdown coach review |
-| `app/web.py` | Streamlit MVP: single-page match analyzer + coach review viewer. Runs as a separate `web` service on `:8501`; reuses `analyze`/`coach`/`fetcher` directly via imports |
-| `app/cli.py` | argparse entry points. Calls `db.ensure_schema()` once on startup, dispatches to module functions |
+| `app/config.py` | Reads env (`ACCOUNT_ID`, DB URL, JWT/Fernet secrets, OpenID URLs, cost cap). Per-user path helpers. `resolve_account_id(explicit)`. |
+| `app/db.py` | Postgres helper + idempotent `ensure_schema()` for all four tables. |
+| `app/fetcher.py` | OpenDota HTTP client with 429/5xx retry. All public functions take explicit `account_id`. `upsert_match` populates `user_matches` when given an account. |
+| `app/snapshots.py` | Pure transform: parsed match JSON → per-minute snapshot dicts. |
+| `app/train.py` | Group-aware train/val split, fits XGBoost. One model shared across users (rank-conditioned). Post-fit: per-bracket isotonic calibration (`data/calibrators.joblib`). Tracks `parsed_match_count_at_train` in `model_meta.json` so the auto-retrain hint can compute deltas. |
+| `app/analyze.py` | `analyze(match_id, account_id, …)` — win-prob curve + scored decisions. Decision clustering for same-fight deaths. Buyback events. Replay deep links. Trims feature list to `model.n_features_in_` for forward-compat. Applies per-bracket calibration when present. |
+| `app/coach.py` | Hybrid beats → Claude. Resolves BYO vs server key, runs `cost.check_budget` before, `cost.charge` after, writes to `data/reviews/<aid>/<mid>.md`. Supports streaming via `on_chunk` callback. Loads `data/baselines.json` for item-timing vs bracket-median beats. Memory split into recent / same-hero / cross-match-matchup blocks with patch-aware decay. |
+| `app/baselines.py` | Builds and reads per-(rank_bucket, hero, item) median purchase-time table. `data/baselines.json`. Powers the coach's "BKB at 17:30 vs bracket median 14:00" advice. |
+| `app/cost.py` | Daily/monthly per-user spend tracking; `BudgetExceeded` when over cap on the server key. |
+| `app/crypto.py` | Fernet encryption helpers for BYO Anthropic keys at rest. |
+| `app/auth.py` | FastAPI on `:8502`. Steam OpenID 2.0 sign-in → mints JWT → 302s to web. |
+| `app/web.py` | Streamlit entry / home page. Handles `?token=` handoff, dev-env fallback. |
+| `app/web_auth.py` | Streamlit-side `current_user()`, `require_login()`, and the shared sidebar (cost dashboard + model picker + sign-out). |
+| `app/pages/*.py` | Analyzer · History · Patterns · Reviews · Settings. Each page calls `require_login()`. |
+| `app/cli.py` | argparse with `--account` parent. Calls `db.ensure_schema()` on startup. |
 
 ## Training pipeline
 
@@ -148,7 +164,33 @@ The window is asymmetric (30s before, 90s after) because Dota decisions usually 
 
 ## Database schema
 
-Single source: `app/db.py:SCHEMA_SQL`. Runs idempotently at the start of every CLI command.
+Single source: `app/db.py:SCHEMA_SQL`. Runs idempotently on every CLI/service startup.
+
+### `users`
+
+| column | type | notes |
+|---|---|---|
+| `account_id` | BIGINT PK | 32-bit Dota account id (= Steam ID 64 − 76561197960265728) |
+| `steam_id_64` | BIGINT UNIQUE | from Steam OpenID assertion |
+| `friend_code` | TEXT | optional display value |
+| `rank_tier` | INTEGER | last-known rank |
+| `profile_json` | JSONB | cached OpenDota profile blob |
+| `anthropic_key_encrypted` | TEXT | Fernet ciphertext, NULL if user uses the server key |
+| `daily_cost_used_cents` | INTEGER | server-key spend today (resets daily) |
+| `daily_cost_reset_at` | TIMESTAMPTZ | last reset wall-clock |
+| `monthly_cost_used_cents` | INTEGER | running total (server + BYO) |
+| `created_at`, `last_seen_at` | TIMESTAMPTZ | bookkeeping |
+
+Indexes: `steam_id_64`.
+
+### `user_matches`
+
+| column | type | notes |
+|---|---|---|
+| `(user_id, match_id)` | BIGINT + BIGINT PK | composite |
+| `slot`, `hero_id`, `kills`, `deaths`, `assists` | per-user-in-match | replaces the old `matches.your_*` columns |
+
+Indexes: `user_id`. FKs to both `users(account_id)` and `matches(match_id)` with cascade delete.
 
 ### `matches`
 
@@ -163,7 +205,7 @@ Single source: `app/db.py:SCHEMA_SQL`. Runs idempotently at the start of every C
 | `avg_rank_tier` | INTEGER | match's average rank tier |
 | `parsed` | BOOLEAN | true once `version` is set in match JSON |
 | `patch` | INTEGER | informational |
-| `your_slot`, `your_hero_id`, `your_kills`, `your_deaths`, `your_assists` | various | populated only if you played in this match |
+| `your_slot`, `your_hero_id`, `your_kills`, `your_deaths`, `your_assists` | various | **deprecated** — single-user back-compat columns. Per-user data now lives in `user_matches`. Single-user CLI flow still populates these when `--account`/`$ACCOUNT_ID` matches `players[]`. |
 | `fetched_at` | TIMESTAMPTZ | last upsert time |
 
 Indexes: `parsed`, `avg_rank_tier`.
@@ -180,13 +222,14 @@ Indexes: `avg_rank_tier`. FK `match_id → matches(match_id)` with `ON DELETE CA
 
 ## Caching strategy
 
-- **OpenDota match JSON** → `data/matches/{match_id}.json`. Always read from disk first; only hit the API on miss or `force=True`. Unparsed matches are NOT cached (no useful timeline data yet) — discovery records them in the `matches` table only.
-- **Profile** → `data/profile.json` (1 call per refresh).
-- **Heroes list** → `data/heroes.json` (1 call ever; refresh manually if new heroes ship).
-- **Model artifact** → `data/turbo_winprob.json` (XGBoost native JSON format).
+- **OpenDota match JSON** → `data/matches/{match_id}.json`. Disk-first; only hits the API on miss or `force=True`.
+- **Profile** → `data/profiles/{account_id}.json` (per-user; 1 call per refresh).
+- **Heroes list** → `data/heroes.json` (1 call ever).
+- **Model artifact** → `data/turbo_winprob.json` (XGBoost native JSON; one model shared across all users).
 - **Training metrics** → `data/model_meta.json`.
-- **Coach reviews** → `data/reviews/<match_id>.md` (one markdown file per `coach` invocation).
-- **Coach session memory** → `data/coach_memory.json` (last 20 reviewed matches with heuristic themes; last 5 injected into the next coach prompt).
+- **Coach reviews** → `data/reviews/{account_id}/{match_id}.md` (per-user).
+- **Coach session memory** → `data/coach_memory/{account_id}.json` (per-user; last 20 reviewed matches, last 5 injected into the next prompt).
+
 
 The DB stores summary rows; disk cache stores full JSON. Snapshots can always be rebuilt from the disk cache.
 
@@ -207,6 +250,50 @@ analyze(match_id) → beats (rules) → prompt + injected memory → Claude → 
 - `ANTHROPIC_API_KEY` from env only; never logged or persisted.
 - Session memory: `data/coach_memory.json` carries the last 20 reviews; the last 5 are injected into each new prompt for recurring-pattern detection.
 
+## Auth pipeline (Steam OpenID → JWT)
+
+```
+   browser                 auth (:8502)              steamcommunity.com           web (:8501)
+      │                        │                            │                          │
+      │ GET /auth/steam/login  │                            │                          │
+      │───────────────────────►│                            │                          │
+      │  302 to Steam OIDC     │                            │                          │
+      │◄───────────────────────│                            │                          │
+      │  GET checkid_setup     │                            │                          │
+      │────────────────────────────────────────────────────►│                          │
+      │  user authenticates / approves                      │                          │
+      │  302 back to /auth/steam/callback?openid.identity=… │                          │
+      │◄────────────────────────────────────────────────────│                          │
+      │ GET /auth/steam/callback                            │                          │
+      │───────────────────────►│                            │                          │
+      │                        │ POST check_authentication  │                          │
+      │                        │───────────────────────────►│                          │
+      │                        │  "is_valid:true"           │                          │
+      │                        │◄───────────────────────────│                          │
+      │                        │ INSERT/UPDATE users        │                          │
+      │                        │ mint JWT (HS256, 7d exp)   │                          │
+      │ 302 to /?token=<jwt>   │                            │                          │
+      │◄───────────────────────│                            │                          │
+      │ GET /?token=<jwt>      │                            │                          │
+      │───────────────────────────────────────────────────────────────────────────────►│
+      │                        │                            │   verify_jwt, set        │
+      │                        │                            │   session_state.account  │
+      │                        │                            │   clear ?token from URL  │
+```
+
+JWT-only sessions: there's no cookie store, no refresh tokens, no revocation list. To force-logout everyone, rotate `JWT_SECRET` in `.env`.
+
+## Cost gating
+
+`app.cost` tracks per-user Anthropic spend. Each successful `coach` run:
+
+1. `cost.check_budget(account_id, use_byo_key)` — raises `BudgetExceeded` if the daily cap is hit on the server key. BYO bypasses.
+2. Coach calls Anthropic.
+3. `cost.estimate_cents(model_id, usage)` converts the response's `usage` dict into cents using `app.cost.PRICE_PER_MTOK`.
+4. `cost.charge(account_id, cents, use_byo_key)` advances `daily_cost_used_cents` (only when *not* BYO) and always advances `monthly_cost_used_cents` for stats.
+
+The daily counter resets when its `daily_cost_reset_at::date < NOW()::date` (UTC), evaluated inside the upsert.
+
 ## Why this design
 
 - **No ground-truth label for "bad decision."** Only win/loss. We use heuristic decision *surfacing* + ML *scoring*.
@@ -218,4 +305,7 @@ analyze(match_id) → beats (rules) → prompt + injected memory → Claude → 
 - **Hybrid coach: rules pin facts, LLM phrases them.** The factual content of the review comes from `analyze` + raw match data. The LLM only synthesizes prose from supplied beats and is explicitly told not to invent events. This bounds hallucination risk while still getting human-sounding output.
 - **Discovery via JOIN, fetch lazily.** `bracket-fetch` and `refresh-parses` use `/explorer` JOINs to learn ID + parse-status in batches, then only fetch full match JSONs for matches that are actually parsed. Cuts API calls from 3N to ~1N over the parse lifecycle.
 - **Coach memory across sessions.** Each coach run appends to `data/coach_memory.json`; the next call injects the last 5 entries so the model can recognize recurring patterns ("you've died to Pudge 3 games in a row").
-- **Secrets in `.env`, never in source.** `ANTHROPIC_API_KEY` is read from the environment at the call site, never logged, never written to disk. `.env` is gitignored.
+- **Secrets in `.env`, never in source.** `ANTHROPIC_API_KEY`, `JWT_SECRET`, and `FERNET_KEY` all come from the environment. `.env` is gitignored. `docs/SECURITY.md` documents the full threat model.
+- **Steam OpenID over passwords.** The user never types a password into our app. Steam handles authentication; we only receive a signed Steam ID. Conversion to Dota `account_id` is the same offset used everywhere in the Dota / OpenDota ecosystem.
+- **One shared, rank-conditioned model across all users.** The win-prob model treats `avg_rank_tier` as a feature, so the same XGBoost classifier works for any user's bracket. Adding users doesn't require retraining; data they bring in just feeds the next training pass.
+- **BYO Anthropic key as the cost-control escape hatch.** Server-side default with a daily cap keeps casual use cheap for the operator; users who want unlimited coaching paste their own key (encrypted at rest with Fernet) and pay Anthropic directly.

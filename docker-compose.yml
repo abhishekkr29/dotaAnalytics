@@ -28,6 +28,24 @@ services:
       - ./app:/code/app
       - ./data:/code/data
       - ./docs:/code/docs
+      - ./scripts:/code/scripts
+      - ./tests:/code/tests
+
+  auth:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://dota:dota@db:5432/dota
+      DATA_DIR: /code/data
+    volumes:
+      - ./app:/code/app
+      - ./data:/code/data
+    ports:
+      - "8502:8502"
+    command: ["uvicorn", "app.auth:app", "--host", "0.0.0.0", "--port", "8502"]
 
   web:
     build: .
