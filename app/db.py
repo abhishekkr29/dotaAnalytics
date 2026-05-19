@@ -13,11 +13,6 @@ CREATE TABLE IF NOT EXISTS matches (
     avg_rank_tier       INTEGER,
     parsed              BOOLEAN     NOT NULL DEFAULT FALSE,
     patch               INTEGER,
-    your_slot           SMALLINT,
-    your_hero_id        INTEGER,
-    your_kills          INTEGER,
-    your_deaths         INTEGER,
-    your_assists        INTEGER,
     parse_requested_at  TIMESTAMPTZ,
     fetched_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -25,6 +20,14 @@ CREATE INDEX IF NOT EXISTS idx_matches_parsed         ON matches(parsed);
 CREATE INDEX IF NOT EXISTS idx_matches_avg_rank       ON matches(avg_rank_tier);
 CREATE INDEX IF NOT EXISTS idx_matches_parse_request  ON matches(parse_requested_at);
 ALTER TABLE matches ADD COLUMN IF NOT EXISTS parse_requested_at TIMESTAMPTZ;
+
+-- v3: drop the single-user back-compat columns. Per-user "you played in this match"
+-- data lives in user_matches now.
+ALTER TABLE matches DROP COLUMN IF EXISTS your_slot;
+ALTER TABLE matches DROP COLUMN IF EXISTS your_hero_id;
+ALTER TABLE matches DROP COLUMN IF EXISTS your_kills;
+ALTER TABLE matches DROP COLUMN IF EXISTS your_deaths;
+ALTER TABLE matches DROP COLUMN IF EXISTS your_assists;
 
 CREATE TABLE IF NOT EXISTS snapshots (
     match_id            BIGINT   NOT NULL REFERENCES matches(match_id) ON DELETE CASCADE,

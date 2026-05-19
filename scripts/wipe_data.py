@@ -1,36 +1,40 @@
-"""Destructive: wipe training data so we can rebuild from scratch.
+"""Destructive: wipe user/history data. Parsed match data is preserved by default.
 
-Two modes:
+Default mode — USER WIPE (cheap to rebuild)
+  Drops:
+    - DB: users + user_matches  (cascade — users have FKs to user_matches)
+    - data/profiles/<aid>.json  (per-user profile cache)
+    - data/coach_memory/<aid>.json
+    - data/reviews/<aid>/       (every user's review directory)
+  Keeps (expensive to rebuild):
+    - DB: matches, snapshots                (the training dataset itself)
+    - data/matches/<id>.json                (cached parsed match JSONs)
+    - data/turbo_winprob.json               (trained model)
+    - data/calibrators.joblib               (per-bracket calibrators)
+    - data/baselines.json                   (counterfactual baselines)
+    - data/model_meta.json                  (training metrics)
+    - data/heroes.json                      (hero metadata)
 
-  Default (training-data wipe)
-    Drops:
-      - DB: matches, snapshots, user_matches            (TRUNCATE … CASCADE)
-      - data/matches/*.json                             (cached match JSONs)
-      - data/turbo_winprob.json, calibrators.joblib,
-        baselines.json, model_meta.json                 (model artifacts)
-    Keeps:
-      - users table + Anthropic BYO keys + cost counters
-      - data/profiles/*.json
-      - data/coach_memory/*.json
-      - data/reviews/<aid>/*.md
-      - data/heroes.json
+  Result: sign-in state and review history are gone; the user re-signs in via
+  Steam OpenID (or via $ACCOUNT_ID env fallback) and the system still has the
+  full trained model + 15k+ parsed matches. They'll just need to re-bracket-fetch
+  to populate THEIR user_matches links.
 
-  --full mode (factory reset — runs as a brand-new user)
-    Everything above, PLUS:
-      - users table rows                                (Steam IDs, cost counters wiped)
-      - data/profiles/*.json
-      - data/coach_memory/*.json
-      - data/reviews/                                   (every user's reviews directory)
-      - data/heroes.json
-    Result: identical to a fresh checkout, except .env and the docker volume itself.
+--include-matches — NUCLEAR WIPE (rare; only when training data is bad)
+  Default mode PLUS:
+    - DB: matches, snapshots
+    - data/matches/*.json
+    - data/turbo_winprob.json, calibrators.joblib, baselines.json, model_meta.json
+    - data/heroes.json
+  Result: identical to a fresh checkout (modulo .env). Requires re-running
+  collect_data.sh + train_model.sh which costs ~$1.50 and ~5-10 min wall-clock
+  with Premium key. Don't use this unless you actually need to.
 
 Usage:
     docker compose run --rm app python scripts/wipe_data.py --confirm
-        # default mode, prompts for the word "wipe"
-    docker compose run --rm app python scripts/wipe_data.py --confirm --full
-        # full reset, prompts for the phrase "wipe everything"
-    docker compose run --rm app python scripts/wipe_data.py --confirm --keep-matches-json
-        # default mode but keep the cached match JSONs
+        # USER WIPE — preserves parsed matches + model; prompts for "wipe"
+    docker compose run --rm app python scripts/wipe_data.py --confirm --include-matches
+        # NUCLEAR WIPE — full reset; prompts for "wipe everything"
 
 Idempotent. Re-running on already-empty state is a no-op.
 """
@@ -88,29 +92,29 @@ def _empty_directory(dir_path) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Wipe user/history data (default) or full reset (--include-matches).",
+    )
     parser.add_argument("--confirm", action="store_true",
                         help="First gate. Required.")
-    parser.add_argument("--full", action="store_true",
-                        help="Factory reset — also wipe users, profiles, coach memory, "
-                             "reviews, and heroes.json. Run if you want a brand-new-user "
-                             "experience.")
-    parser.add_argument("--keep-matches-json", action="store_true",
-                        help="Skip deleting data/matches/*.json (DB rows still dropped). "
-                             "Ignored in --full mode.")
+    parser.add_argument("--include-matches", action="store_true",
+                        help="NUCLEAR: also wipe parsed matches, snapshots, model, calibrators, "
+                             "baselines, match JSONs, heroes.json. Forces a full re-collect + "
+                             "re-train (~$1.50, hours of work). Default leaves match data intact.")
     args = parser.parse_args()
 
     if not args.confirm:
         print("Refusing to run without --confirm. See `--help`.", file=sys.stderr)
         return 2
 
-    if args.full:
+    if args.include_matches:
         print(
-            "FULL WIPE. This will drop:\n"
-            "  - matches, snapshots, user_matches, users (DB tables)\n"
-            "  - all cached match JSONs, profiles, coach memory, reviews\n"
-            "  - trained model, calibrators, baselines, model_meta\n"
-            "  - data/heroes.json\n"
+            "NUCLEAR WIPE. This will drop:\n"
+            "  - users, user_matches, matches, snapshots\n"
+            "  - profiles, coach memory, reviews\n"
+            "  - trained model + calibrators + baselines + match JSONs + heroes.json\n"
+            "Recovering requires re-running collect_data.sh + train_model.sh\n"
+            "  (~$1.50 in OpenDota Premium calls and several minutes of compute).\n"
             "What stays: .env, Postgres schema, the codebase itself.\n"
         )
         if not _confirm_prompt("wipe everything"):
@@ -118,10 +122,13 @@ def main() -> int:
             return 1
     else:
         print(
-            "This will TRUNCATE matches, snapshots, user_matches and delete "
-            "the trained model + calibrators + baselines + cached match JSONs.\n"
-            "User accounts, coach memory, and reviews will be preserved "
-            "(pass --full to wipe those too).\n"
+            "USER WIPE. This will drop:\n"
+            "  - users + user_matches (DB tables)\n"
+            "  - data/profiles/*.json\n"
+            "  - data/coach_memory/*.json\n"
+            "  - data/reviews/<aid>/ (every user's reviews directory)\n"
+            "Parsed match data, the trained model, calibrators, and baselines are KEPT.\n"
+            "(Pass --include-matches to also wipe those — destructive and expensive.)\n"
         )
         if not _confirm_prompt("wipe"):
             print("Aborted.")
@@ -129,50 +136,51 @@ def main() -> int:
 
     summary: dict = {}
 
-    # ---- DB tables ----
-    db_tables = ["user_matches", "snapshots", "matches"]
-    if args.full:
-        db_tables.append("users")
-    summary.update(_truncate_tables(db_tables))
+    # ---- USER/HISTORY DB (always wiped) ----
+    user_tables = ["user_matches", "users"]
+    summary.update(_truncate_tables(user_tables))
 
-    # ---- Always: model + calibrators + baselines + metrics ----
-    summary["artifact_files_dropped"] = _delete_files([
-        config.MODEL_PATH,
-        config.DATA_DIR / "calibrators.joblib",
-        config.DATA_DIR / "baselines.json",
-        config.DATA_DIR / "model_meta.json",
-    ])
+    # ---- USER/HISTORY filesystem (always wiped) ----
+    summary["profiles_dropped"]     = _empty_directory(config.PROFILES_DIR)
+    summary["memory_files_dropped"] = _empty_directory(config.MEMORY_DIR)
+    summary["reviews_dropped"]      = _empty_directory(config.REVIEWS_DIR)
 
-    # ---- Cached match JSONs (skipped if --keep-matches-json in default mode) ----
-    if args.full or not args.keep_matches_json:
+    # ---- NUCLEAR extras (only with --include-matches) ----
+    if args.include_matches:
+        match_tables = ["snapshots", "matches"]
+        summary.update(_truncate_tables(match_tables))
+
+        summary["artifact_files_dropped"] = _delete_files([
+            config.MODEL_PATH,
+            config.DATA_DIR / "calibrators.joblib",
+            config.DATA_DIR / "baselines.json",
+            config.DATA_DIR / "model_meta.json",
+            config.DATA_DIR / "heroes.json",
+        ])
+
         n_json = 0
         if config.MATCHES_DIR.exists():
             for f in config.MATCHES_DIR.glob("*.json"):
                 f.unlink()
                 n_json += 1
         summary["match_jsons_dropped"] = n_json
-    else:
-        summary["match_jsons_dropped"] = "skipped (--keep-matches-json)"
-
-    # ---- --full extras ----
-    if args.full:
-        summary["profiles_dropped"]      = _empty_directory(config.PROFILES_DIR)
-        summary["memory_files_dropped"]  = _empty_directory(config.MEMORY_DIR)
-        summary["reviews_dropped"]       = _empty_directory(config.REVIEWS_DIR)
-        summary["heroes_json_dropped"]   = _delete_files([config.DATA_DIR / "heroes.json"])
 
     print()
-    print("Wipe complete." if not args.full else "Full wipe complete — running as a fresh user.")
+    print(
+        "Nuclear wipe complete — running as a fresh checkout."
+        if args.include_matches
+        else "User wipe complete — parsed match data and model preserved."
+    )
     for k, v in summary.items():
         print(f"  {k}: {v}")
     print()
     print("Next steps:")
-    print("  1. bash scripts/collect_data.sh    # gather across 7 brackets")
-    print("  2. bash scripts/train_model.sh     # build model + calibrators + baselines")
-    if args.full:
-        print()
-        print("Sign in to the web UI to recreate your user account (Steam OpenID or "
-              "$ACCOUNT_ID env fallback).")
+    if args.include_matches:
+        print("  1. bash scripts/collect_data.sh    # gather across 7 brackets")
+        print("  2. bash scripts/train_model.sh     # build model + calibrators + baselines")
+    else:
+        print("  - Sign in to the web UI via Steam OpenID (or $ACCOUNT_ID env fallback)")
+        print("  - The trained model + baselines are still in place; nothing to retrain")
     return 0
 
 

@@ -247,6 +247,25 @@ JWTs are HMAC-SHA256 signed with `JWT_SECRET`. Payload: `{"account_id": int, "ex
 | `heroes_by_id() -> dict[int, dict]` | Cached `/heroes` lookup |
 | `KEY_ITEMS` | `{npc_item_key: display_name}` |
 
+## `wipe_data.py` semantics
+
+Two modes, opt-in via the `--include-matches` flag. **Default mode preserves parsed match data** — only user/history state is dropped.
+
+| | Default (no flag) | `--include-matches` |
+|---|---|---|
+| `users` table | drop | drop |
+| `user_matches` table | drop | drop |
+| `data/profiles/<aid>.json` | drop | drop |
+| `data/coach_memory/<aid>.json` | drop | drop |
+| `data/reviews/<aid>/` | drop | drop |
+| `matches` table | **KEEP** | drop |
+| `snapshots` table | **KEEP** | drop |
+| `data/matches/*.json` | **KEEP** | drop |
+| Trained model + calibrators + baselines + meta | **KEEP** | drop |
+| `data/heroes.json` | **KEEP** | drop |
+
+Interactive prompt phrase differs per mode (`wipe` vs `wipe everything`) so muscle-memory mistakes don't escalate to a full reset.
+
 ### `app.coach`
 
 | Function | Purpose |

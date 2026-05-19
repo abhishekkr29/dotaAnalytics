@@ -85,6 +85,16 @@ log "  stuck threshold:           $STUCK_CYCLES consecutive no-progress cycles"
 log "  opendota tier:             $(opendota_tier)"
 log "============================================================"
 
+# ─── Phase 0: harvest already-parsed matches first ────────────────────
+# On restarts (or when /explorer is lagging), there are usually thousands of
+# matches already parsed at OpenDota that our DB still says are unparsed. Pull
+# them in via per-match status checks BEFORE we submit any new requests, so
+# Phase 2 only POSTs for things that genuinely need parsing.
+PRE_HARVEST_LIMIT=20000
+log "Phase 0: harvest already-parsed matches (per-match check, up to $PRE_HARVEST_LIMIT)"
+dc refresh-parses --mode per_match --limit "$PRE_HARVEST_LIMIT" \
+    || log "    refresh-parses failed; continuing"
+
 # ─── Phase 1: discovery at every bracket ──────────────────────────────
 log "Phase 1: discovery at each rank target"
 for i in "${!RANK_TARGETS[@]}"; do
@@ -95,10 +105,19 @@ for i in "${!RANK_TARGETS[@]}"; do
         || log "    bracket-fetch failed at rank $rank; continuing"
 done
 
+# ─── Phase 1.5: harvest again (catches newly-discovered matches that are
+#                                already parsed at OpenDota — /explorer's
+#                                `parsed` flag in bracket-fetch is unreliable). ──
+log "Phase 1.5: post-discovery harvest of already-parsed newcomers"
+dc refresh-parses --mode per_match --limit "$PRE_HARVEST_LIMIT" \
+    || log "    refresh-parses failed; continuing"
+
 # ─── Phase 2: per-bracket initial parse requests ──────────────────────
-# Submit `--limit 2*TARGET` per bracket so we have headroom for parse failures
-# (~30% of submitted matches won't parse — expired replays etc).
-log "Phase 2: initial per-bracket parse requests"
+# Submit `--limit 2*TARGET` per bracket. The 24h cooldown filter inside
+# request-parses prevents duplicate POSTs for matches we already requested.
+# After Phases 0 and 1.5, only genuinely unparsed-AND-never-requested matches
+# get submitted here.
+log "Phase 2: per-bracket parse requests (skips cooldowned + parsed)"
 INITIAL_REQUEST_LIMIT=$((TARGET * 2))
 for i in "${!RANK_TARGETS[@]}"; do
     rank="${RANK_TARGETS[$i]}"
@@ -130,9 +149,11 @@ done
 
 for cycle in $(seq 1 "$MAX_CYCLES"); do
     log "----- cycle $cycle / $MAX_CYCLES -----"
-    # explorer-batch mode: ~50x cheaper than per-match. /explorer index lag is fine
-    # because cycles are 20-min apart; everything catches up within 1-3 hours.
-    dc refresh-parses --mode explorer --limit 1000 || log "  refresh-parses errored; continuing"
+    # per_match mode: reliable. /explorer-batch is faster but its `matches` table
+    # has been observed lagging by 6+ hours, missing matches OpenDota has clearly
+    # parsed. Per-call cost on Premium is $0.0001 so per_match at limit=2000 per
+    # cycle is ~$0.20 per cycle — acceptable.
+    dc refresh-parses --mode per_match --limit 2000 || log "  refresh-parses errored; continuing"
 
     all_settled=true
     for i in "${!RANK_TARGETS[@]}"; do

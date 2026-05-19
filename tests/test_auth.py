@@ -1,7 +1,6 @@
 import time
 
 import jwt
-import pytest
 
 from app import auth, config
 
@@ -23,7 +22,6 @@ def test_verify_rejects_tampered_token():
 
 
 def test_verify_rejects_wrong_secret():
-    token = auth.make_jwt(123)
     # Decode with the wrong secret should return None
     other_token = jwt.encode({"account_id": 123, "exp": int(time.time()) + 3600},
                              "different-secret", algorithm="HS256")

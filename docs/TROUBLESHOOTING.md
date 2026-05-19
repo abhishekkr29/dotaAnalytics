@@ -166,24 +166,31 @@ The auth service can start with empty `JWT_SECRET` (healthz doesn't require it).
 
 ### `scripts/wipe_data.py` refuses to run
 
-By design — it requires `--confirm` AND an interactive prompt. Default mode expects `wipe`; `--full` mode expects `wipe everything` (more emphatic phrase, harder to mistype). To run non-interactively (CI / scripted), pipe the phrase into stdin:
+By design — it requires `--confirm` AND an interactive prompt. Default expects `wipe`; `--include-matches` expects `wipe everything` (harder to mistype). To run non-interactively, pipe the phrase to stdin:
 
 ```bash
 echo wipe | docker compose run --rm -T app python scripts/wipe_data.py --confirm
-echo "wipe everything" | docker compose run --rm -T app python scripts/wipe_data.py --confirm --full
+echo "wipe everything" | docker compose run --rm -T app python scripts/wipe_data.py --confirm --include-matches
 ```
 
-### What `--full` actually drops
+### What the two modes actually drop
 
-In addition to the default-mode drops (matches/snapshots/user_matches tables, model artifacts, match JSONs):
+**Default — USER WIPE (cheap to rebuild):**
+- `users` + `user_matches` (DB tables)
+- `data/profiles/*.json`
+- `data/coach_memory/*.json`
+- `data/reviews/<aid>/`
+- **PRESERVES:** parsed matches table, snapshots table, trained model, calibrators, baselines, heroes.json, all cached match JSONs
 
-- `users` table rows — Steam IDs, BYO Anthropic keys, cost counters all gone
-- `data/profiles/*.json` — per-user OpenDota profile cache
-- `data/coach_memory/*.json` — per-user coach memory
-- `data/reviews/<account_id>/*` — every user's review markdown directory
-- `data/heroes.json` — gets re-fetched on next analyze
+Use this when you want to reset sign-ins or coach memory but keep the model.
 
-What stays: `.env`, the Postgres schema (re-bootstrapped on next CLI run), the codebase. After `--full` you can sign in via Steam OpenID and you'll be a brand-new user with zero history.
+**`--include-matches` — NUCLEAR WIPE (expensive to rebuild):**
+- Everything from default wipe
+- PLUS: `matches`, `snapshots` (DB tables)
+- PLUS: model, calibrators, baselines, `model_meta.json`, heroes.json
+- PLUS: all `data/matches/*.json` (15+ GB potentially)
+
+Requires re-running `collect_data.sh` + `train_model.sh` to recover (~$1.50 + several minutes/hours wall-clock with Premium key). Don't use unless training data is genuinely bad (e.g., stale patch).
 
 ### `wipe_data.py` succeeded but didn't drop the match JSONs
 

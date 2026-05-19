@@ -9,15 +9,17 @@ Live source of truth: `data/model_meta.json` (overwritten by every `train` run).
 <!-- AUTO:current-model:start -->
 | Field | Value |
 |---|---|
-| Trained on | **2026-05-15** |
-| `n_matches` | 997 |
-| `n_rows` (snapshots) | 21,899 |
-| `n_train_rows` / `n_val_rows` | 17,538 / 4,361 (80/20 group split) |
-| `val_log_loss` | 0.4558 |
-| **`val_auc`** | **0.8544** |
-| `best_iteration` | 64 |
+| Trained on | **2026-05-19** |
+| `n_matches` | 15250 |
+| `n_rows` (snapshots) | 391,013 |
+| `n_train_rows` / `n_val_rows` | 313,020 / 77,993 (80/20 group split) |
+| `val_log_loss` | 0.5352 |
+| **`val_auc`** | **0.7987** |
+| `val_auc_calibrated` | 0.8025 |
+| Calibrated brackets | [1, 2, 3, 4, 5, 6, 7, 8] |
+| `best_iteration` | 88 |
 | Feature count | 19 |
-| Artifact path | `data/turbo_winprob.json` |
+| Artifact path | `data/turbo_winprob.json` + `data/calibrators.joblib` |
 <!-- AUTO:current-model:end -->
 
 **Headline:** `val_auc 0.85` is in the *solid* band of the volume-vs-quality table below — production-ready for Δ-scoring in `analyze`.
@@ -31,6 +33,7 @@ Every successful `train` appends a row here (deduped against the last row, so re
 |---|---|---|---|---|---|
 | 2026-05-15 | 589 | 12,618 | 0.8541 | 0.4596 | 60 |
 | 2026-05-15 | 997 | 21,899 | 0.8544 | 0.4558 | 64 |
+| 2026-05-19 | 15250 | 391,013 | 0.7987 | 0.5352 | 88 |
 <!-- AUTO:run-history:end -->
 
 Observed so far: doubling the dataset (589 → 997) moved `val_auc` by +0.0003 (noise) and `val_log_loss` by −0.004 (modest calibration gain). The 19-feature model is **saturated at ~600 matches** for this bracket. Further gains will require **better features**, not more rows — see [Future work](#future-work).

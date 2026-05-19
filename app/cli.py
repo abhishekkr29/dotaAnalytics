@@ -107,16 +107,17 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     ))
 
 
+def _stream_to_stdout(text: str) -> None:
+    import sys
+    sys.stdout.write(text)
+    sys.stdout.flush()
+
+
 def cmd_coach(args: argparse.Namespace) -> None:
     import sys
     from app import coach
 
-    on_chunk = None
-    if args.stream:
-        def on_chunk(text: str) -> None:
-            sys.stdout.write(text)
-            sys.stdout.flush()
-
+    on_chunk = _stream_to_stdout if args.stream else None
     result = coach.coach(
         args.match_id, account_id=_account(args),
         model=args.model, top_k=args.top_k, min_impact=args.min_impact,
@@ -192,12 +193,13 @@ def main() -> None:
     )
     rf.add_argument("--limit", type=int, default=200)
     rf.add_argument(
-        "--mode", default="explorer",
-        choices=["explorer", "per_match", "hybrid"],
-        help="explorer (default, cheapest): batch status via /explorer + JSON fetch only "
-             "for confirmed-parsed. ~50x fewer API calls. per_match (legacy): GET /matches/{id} "
-             "for every unparsed row. hybrid: explorer-batch + per-match fallback for matches "
-             "pending >--fallback-after-hours.",
+        "--mode", default="per_match",
+        choices=["per_match", "explorer", "hybrid"],
+        help="per_match (default, reliable): GET /matches/{id} for every unparsed row. "
+             "explorer (cheap but laggy — /explorer's matches table can be 6h+ stale): "
+             "batch status via /explorer + JSON fetch only for confirmed-parsed. "
+             "hybrid: explorer-batch + per-match fallback for matches pending "
+             ">--fallback-after-hours.",
     )
     rf.add_argument(
         "--fallback-after-hours", type=int, default=48,

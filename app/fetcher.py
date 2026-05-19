@@ -1,4 +1,5 @@
 import json
+import re
 import time
 
 import requests
@@ -8,6 +9,18 @@ from app import config, db
 
 
 _RETRYABLE_STATUSES = {429, 500, 502, 503, 504, 520, 521, 522, 524}
+
+_API_KEY_RE = re.compile(r'([?&])api_key=[^&\s]*')
+
+
+def _safe_error(exc: Exception) -> str:
+    """Stringify an exception with any `api_key=…` query param masked.
+
+    `requests.HTTPError.__str__()` includes the failing URL with all query params.
+    Without masking, our Premium API key would leak into error logs and stdout
+    on every retryable failure (429, 5xx, 522). This helper strips it out.
+    """
+    return _API_KEY_RE.sub(r'\1api_key=***', str(exc))
 
 
 def _params_with_api_key(params: dict | None) -> dict:
@@ -90,7 +103,7 @@ def _explorer_parse_status(match_ids: list[int], chunk: int = 50) -> set[int]:
             )
             parsed.update(r["match_id"] for r in rows)
         except (requests.HTTPError, RuntimeError) as e:
-            print(f"  explorer chunk {chunk_idx}/{n_chunks} failed ({e}); continuing")
+            print(f"  explorer chunk {chunk_idx}/{n_chunks} failed ({_safe_error(e)}); continuing")
     return parsed
 
 
@@ -190,36 +203,28 @@ def _upsert_user_match(conn, account_id: int, match_id: int, player: dict) -> No
 def upsert_match(conn, match: dict, account_id: int | None = None) -> None:
     """Upsert a full match row. If `account_id` is given and that user is in players[],
     also record the per-user link in user_matches."""
-    # Preserve back-compat your_* columns when a single-user CLI flow drives the call.
-    you = player_for(match, account_id) if account_id else {}
     conn.execute(
         """
         INSERT INTO matches (
             match_id, start_time, duration, game_mode, lobby_type,
-            radiant_win, avg_rank_tier, parsed, patch,
-            your_slot, your_hero_id, your_kills, your_deaths, your_assists
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            radiant_win, avg_rank_tier, parsed, patch
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (match_id) DO UPDATE SET
             parsed        = EXCLUDED.parsed,
             avg_rank_tier = EXCLUDED.avg_rank_tier,
-            your_slot     = COALESCE(EXCLUDED.your_slot,     matches.your_slot),
-            your_hero_id  = COALESCE(EXCLUDED.your_hero_id,  matches.your_hero_id),
-            your_kills    = COALESCE(EXCLUDED.your_kills,    matches.your_kills),
-            your_deaths   = COALESCE(EXCLUDED.your_deaths,   matches.your_deaths),
-            your_assists  = COALESCE(EXCLUDED.your_assists,  matches.your_assists),
-            patch         = COALESCE(EXCLUDED.patch,         matches.patch),
+            patch         = COALESCE(EXCLUDED.patch, matches.patch),
             fetched_at    = NOW();
         """,
         (
             match["match_id"], match["start_time"], match["duration"],
             match["game_mode"], match["lobby_type"], match["radiant_win"],
             avg_rank_tier(match), is_parsed(match), match.get("patch"),
-            you.get("player_slot"), you.get("hero_id"),
-            you.get("kills"), you.get("deaths"), you.get("assists"),
         ),
     )
-    if account_id and you:
-        _upsert_user_match(conn, account_id, match["match_id"], you)
+    if account_id:
+        you = player_for(match, account_id)
+        if you:
+            _upsert_user_match(conn, account_id, match["match_id"], you)
 
 
 def upsert_summary(conn, row: dict) -> None:
@@ -289,7 +294,7 @@ def sync_bracket_matches(
                 upsert_match(conn, m, account_id=account_id)
                 fetched_json += 1
             except requests.HTTPError as e:
-                tqdm.write(f"skip {mid}: {e}")
+                tqdm.write(f"skip {mid}: {_safe_error(e)}")
 
     return {
         "rank_tier": rt, "window": window,
@@ -349,7 +354,7 @@ def request_parses(
                 )
                 ok += 1
             except requests.HTTPError as e:
-                tqdm.write(f"skip {mid}: {e}")
+                tqdm.write(f"skip {mid}: {_safe_error(e)}")
                 failed += 1
     out = {
         "unparsed_in_db": total_unparsed,
@@ -373,15 +378,16 @@ def refresh_parses(
     """Check parse status of unparsed matches.
 
     `mode`:
-      - "explorer" (default): cheap. One /explorer batch (~50 IDs each) returns the
-        subset that is now parsed in OpenDota's matches table. Only those get their
-        full JSON fetched. ~50× fewer API calls than per-match. Catches typical
-        newly-parsed within ~1 hour due to /explorer's index lag.
-      - "per_match": legacy. Fetches full /matches/{id} for every unparsed row.
-        Real-time but expensive. Use only when /explorer is misbehaving.
+      - "per_match" (reliable; recommended): GET /matches/{id} for every unparsed
+        row. Real-time and accurate. Costs N API calls per N matches.
+      - "explorer" (cheap when reliable): one /explorer batch (~50 IDs each)
+        returns the subset that is now parsed in OpenDota's matches table.
+        ~50× fewer API calls. **Caveat:** OpenDota's `matches` SQL table
+        observed lagging by 6+ hours on 2026-05-18 — it can miss matches that
+        are actually parsed. Use this only when the freshness lag is acceptable
+        (e.g., periodic background sync, not time-critical workflows).
       - "hybrid": explorer-batch for the bulk, then per-match for any unparsed
         match where `parse_requested_at < NOW() - fallback_after_hours h`.
-        Catches matches the /explorer index missed.
 
     Emits a retrain hint when more than `retrain_hint_threshold` parsed matches
     have accumulated since the last train run.
@@ -405,7 +411,8 @@ def refresh_parses(
     newly_parsed = 0
 
     if mode == "per_match":
-        # Legacy path: fetch every match's full JSON.
+        # Reliable path: fetch every match's full JSON. Used by collect_data.sh
+        # because /explorer's lag has burned us in production.
         with db.connect() as conn:
             for mid in tqdm(ids, desc="per-match check"):
                 try:
@@ -415,7 +422,7 @@ def refresh_parses(
                     if is_parsed(m):
                         newly_parsed += 1
                 except requests.HTTPError as e:
-                    tqdm.write(f"skip {mid}: {e}")
+                    tqdm.write(f"skip {mid}: {_safe_error(e)}")
     else:
         # 1. Cheap batch status check
         parsed_set = _explorer_parse_status(ids)
@@ -432,7 +439,7 @@ def refresh_parses(
                     if is_parsed(m):
                         newly_parsed += 1
                 except requests.HTTPError as e:
-                    tqdm.write(f"skip {mid}: {e}")
+                    tqdm.write(f"skip {mid}: {_safe_error(e)}")
 
         # 3. Hybrid: per-match fallback for matches pending too long without /explorer ack
         if mode == "hybrid":
@@ -456,7 +463,7 @@ def refresh_parses(
                             if is_parsed(m):
                                 newly_parsed += 1
                         except requests.HTTPError as e:
-                            tqdm.write(f"skip {mid}: {e}")
+                            tqdm.write(f"skip {mid}: {_safe_error(e)}")
 
     result = {
         "mode": mode,

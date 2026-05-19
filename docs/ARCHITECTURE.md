@@ -205,7 +205,6 @@ Indexes: `user_id`. FKs to both `users(account_id)` and `matches(match_id)` with
 | `avg_rank_tier` | INTEGER | match's average rank tier |
 | `parsed` | BOOLEAN | true once `version` is set in match JSON |
 | `patch` | INTEGER | informational |
-| `your_slot`, `your_hero_id`, `your_kills`, `your_deaths`, `your_assists` | various | **deprecated** — single-user back-compat columns. Per-user data now lives in `user_matches`. Single-user CLI flow still populates these when `--account`/`$ACCOUNT_ID` matches `players[]`. |
 | `fetched_at` | TIMESTAMPTZ | last upsert time |
 
 Indexes: `parsed`, `avg_rank_tier`.

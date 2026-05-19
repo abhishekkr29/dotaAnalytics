@@ -53,14 +53,15 @@ The default `bracket-fetch` discovers matches at the signed-in account's own ran
 #    Paste it into .env as `OPENDOTA_API_KEY=...` — the fetcher picks it up
 #    automatically.
 
-# 2. (Destructive) Wipe existing training data.
-#    Default: keeps user accounts, BYO keys, coach memory, past reviews.
+# 2. (Optional) Wipe user/history data. Default preserves parsed matches + model.
+#    Use this if you want to reset Steam sign-ins, coach memory, and reviews
+#    WITHOUT losing the hours of OpenDota work behind the parsed match dataset.
 docker compose run --rm app python scripts/wipe_data.py --confirm
 # → type "wipe" at the prompt.
 #
-#    --full: factory reset — also wipes users, profiles, coach memory,
-#    reviews, and heroes.json. Run if you want a brand-new-user experience.
-docker compose run --rm app python scripts/wipe_data.py --confirm --full
+#    Nuclear option: full reset including parsed matches, model, baselines.
+#    Forces a full re-collect (~$1.50, hours). Don't use unless training data is bad.
+docker compose run --rm app python scripts/wipe_data.py --confirm --include-matches
 # → type "wipe everything" at the prompt.
 
 # 3. Collect data across all 7 brackets (Herald → Divine).
