@@ -64,3 +64,23 @@ def reviews_dir_for(account_id: int) -> Path:
     p = REVIEWS_DIR / str(account_id)
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+RECOMMENDATIONS_DIR = DATA_DIR / "recommendations"
+RECOMMENDATIONS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def recommendations_dir_for(account_id: int) -> Path:
+    p = RECOMMENDATIONS_DIR / str(account_id)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+BLAME_DIR = DATA_DIR / "blame"
+BLAME_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def blame_dir_for(account_id: int) -> Path:
+    p = BLAME_DIR / str(account_id)
+    p.mkdir(parents=True, exist_ok=True)
+    return p

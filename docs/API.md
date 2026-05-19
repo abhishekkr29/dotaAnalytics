@@ -48,7 +48,7 @@ Discover Turbo matches at a rank bracket via a single `/explorer` JOIN (ID + sum
 
 **Args:**
 - `--account ID` — used to populate `user_matches` if the signed-in user appears in any discovered match.
-- `--rank N` — target rank_tier (e.g., `15` for Herald 5). Defaults to the signed-in account's own rank. Use to bootstrap training data across multiple brackets — see `scripts/bootstrap_brackets.sh`.
+- `--rank N` — target rank_tier (e.g., `15` for Herald 5). Defaults to the signed-in account's own rank. Use to bootstrap training data across multiple brackets — see `scripts/collect_data.sh`.
 - `--limit N` (default 500), `--window W` (default 10).
 
 **Output (JSON):**
@@ -270,9 +270,12 @@ Interactive prompt phrase differs per mode (`wipe` vs `wipe everything`) so musc
 
 | Function | Purpose |
 |---|---|
-| `coach(match_id, account_id=None, model="sonnet", on_chunk=None, …) -> dict` | Full coach run. Resolves key, checks budget, charges. If `on_chunk` given, streams via `messages.stream()` and calls the callback per text chunk. |
+| `coach(match_id, account_id=None, model="sonnet", on_chunk=None, …) -> dict` | Full coach run. Resolves key, checks budget, charges. If `on_chunk` given, streams via `messages.stream()` and calls the callback per text chunk. Writes `data/reviews/<aid>/<mid>.md`. |
+| `recommend_per_leak(match_id, account_id=None, model="haiku", …) -> dict` | Per-leak tactical advice. Builds causal pre-leak context (your hero/items/gold + enemy state + kills/smokes from `[t-120s, t]`) and asks for 1-2 sentence concrete recommendations. Returns `{recommendations: {leak_idx: text}, cost_cents, from_cache, …}`. Caches to `data/recommendations/<aid>/<mid>.json`. ~$0.005 on Haiku 4.5. |
+| `assign_blame(match_id, account_id=None, model="haiku", target_slot=None, exclude_self=True) -> dict` | Stanley-Parable-narrator 30-50 word blame zinger. Picks worst player on losing team via role-aware composite score; on a loss that's your team (excluding you by default), on a win it's the enemy team. Returns `{blame_text, target: {hero, role, blame_factors, …}, you_won, cost_cents, …}`. Caches to `data/blame/<aid>/<mid>__<slot>.json`. ~$0.001 on Haiku 4.5. |
+| `_pick_blame_target(match, losing_team_radiant, exclude_account)` | Internal. Returns `(player, role, factors)`. Role inferred from GPM rank within team; composite score = weighted sum of role-normalized deviations on deaths / gpm / hero_damage / tower_damage. |
 | `MODEL_ALIASES` | `{haiku,sonnet,opus}` → exact Claude model id |
-| `SYSTEM_PROMPT` | Coach system prompt |
+| `SYSTEM_PROMPT` / `PER_LEAK_SYSTEM_PROMPT` / `BLAME_SYSTEM_PROMPT` | The three system prompts |
 
 ### `app.baselines`
 

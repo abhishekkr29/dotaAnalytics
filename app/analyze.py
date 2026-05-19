@@ -214,6 +214,46 @@ def _score(decisions: list[dict], user_win_prob: list[float]) -> list[dict]:
     return decisions
 
 
+_ACTION_TYPES = frozenset({"item", "ward_obs", "ward_sen", "smoke", "buyback"})
+
+
+def _filter_implausible_attributions(decisions: list[dict]) -> list[dict]:
+    """Drop attribution false-positives caused by Δwp window overlap.
+
+    The scorer computes Δwp over `[t-30s, t+90s]`, so events within ~90s share
+    the same window and get the same magnitude. That's mechanically correct but
+    causally misleading — an item bought 20s after a death gets the death's
+    full Δwp credit even though it didn't cause anything.
+
+    Rules:
+      - Hard (sign): a death with impact ≥ 0 makes no semantic sense; drop.
+        Same for a kill/roshan with impact ≤ 0.
+      - Soft (causal): for action events (item / ward / smoke / buyback),
+        if a death is within 90s AND impact < 0 → drop (death is the cause).
+        If a kill is within 90s AND impact > 0 → drop (kill is the cause).
+    """
+    death_times = [d["t"] for d in decisions if d["type"] == "death"]
+    kill_times  = [d["t"] for d in decisions if d["type"] in ("kill", "roshan")]
+
+    out: list[dict] = []
+    for d in decisions:
+        t, kind, impact = d["t"], d["type"], d["impact"]
+
+        if kind == "death" and impact >= 0:
+            continue
+        if kind in ("kill", "roshan") and impact <= 0:
+            continue
+
+        if kind in _ACTION_TYPES:
+            if impact < 0 and any(abs(t - dt) <= 90 for dt in death_times):
+                continue
+            if impact > 0 and any(abs(t - kt) <= 90 for kt in kill_times):
+                continue
+
+        out.append(d)
+    return out
+
+
 def _format_decision(d: dict, match_id: int) -> dict:
     out = {
         "t": _format_time(d["t"]),
@@ -279,7 +319,8 @@ def analyze(
     )
     clustered = _cluster_deaths(raw_decisions, window_s=30)
     scored = _score(clustered, user_wp)
-    filtered = [d for d in scored if abs(d["impact"]) >= min_impact]
+    plausible = _filter_implausible_attributions(scored)
+    filtered = [d for d in plausible if abs(d["impact"]) >= min_impact]
     leaks = sorted([d for d in filtered if d["impact"] < 0], key=lambda d: d["impact"])[:top_k]
     kept = sorted([d for d in filtered if d["impact"] > 0], key=lambda d: d["impact"], reverse=True)[:top_k]
 

@@ -76,6 +76,85 @@ def test_extract_decisions_yields_item_death_kill_roshan():
     assert "roshan" in types   # objectives has a roshan kill by Radiant
 
 
+def test_filter_drops_death_with_positive_impact():
+    """A death with positive Δwp is a co-event, not a cause. Drop it."""
+    decisions = [
+        {"t": 600, "type": "death", "detail": "Died to Pudge", "impact": 0.05},
+    ]
+    out = analyze._filter_implausible_attributions(decisions)
+    assert out == []
+
+
+def test_filter_drops_kill_with_negative_impact():
+    """A kill with negative Δwp is a co-event, not a cause. Drop it."""
+    decisions = [
+        {"t": 600, "type": "kill", "detail": "Killed Pudge", "impact": -0.05},
+    ]
+    out = analyze._filter_implausible_attributions(decisions)
+    assert out == []
+
+
+def test_filter_drops_roshan_with_negative_impact():
+    decisions = [
+        {"t": 900, "type": "roshan", "detail": "Your team killed Roshan", "impact": -0.03},
+    ]
+    out = analyze._filter_implausible_attributions(decisions)
+    assert out == []
+
+
+def test_filter_drops_item_near_death():
+    """Item bought right after a death gets dropped — the death is the real cause of the Δwp drop."""
+    decisions = [
+        {"t": 600, "type": "death", "detail": "Died to Pudge", "impact": -0.184},
+        {"t": 650, "type": "item",  "detail": "Bought Spirit Vessel", "impact": -0.184},
+    ]
+    out = analyze._filter_implausible_attributions(decisions)
+    types = [d["type"] for d in out]
+    assert "death" in types
+    assert "item" not in types
+
+
+def test_filter_drops_ward_near_kill():
+    """Sentry placed near a kill gets dropped — the kill is the cause of the Δwp rise."""
+    decisions = [
+        {"t": 1200, "type": "kill",     "detail": "Killed Lina",    "impact":  0.087},
+        {"t": 1220, "type": "ward_sen", "detail": "Placed sentry",  "impact":  0.087},
+    ]
+    out = analyze._filter_implausible_attributions(decisions)
+    types = [d["type"] for d in out]
+    assert "kill" in types
+    assert "ward_sen" not in types
+
+
+def test_filter_keeps_isolated_item():
+    """An item with negative Δwp that's NOT near a death stays (could be a real timing leak)."""
+    decisions = [
+        {"t": 600, "type": "item", "detail": "Bought BKB", "impact": -0.04},
+    ]
+    out = analyze._filter_implausible_attributions(decisions)
+    assert len(out) == 1
+    assert out[0]["type"] == "item"
+
+
+def test_filter_keeps_death_with_negative_impact_and_drops_co_event():
+    """The classic case: 5-event cluster reduces to just the death/kill that caused it."""
+    decisions = [
+        {"t":  390, "type": "death",    "detail": "Died to Shaman",      "impact": -0.184},
+        {"t":  410, "type": "item",     "detail": "Bought Spirit Vessel", "impact": -0.184},
+        {"t":  856, "type": "item",     "detail": "Bought Blink",        "impact": -0.137},
+        {"t":  810, "type": "ward_sen", "detail": "Placed sentry",       "impact": -0.137},
+        {"t":  844, "type": "death",    "detail": "Died to QoP",         "impact": -0.137},
+    ]
+    out = analyze._filter_implausible_attributions(decisions)
+    # Both deaths survive; both items and the ward are dropped (co-events)
+    deaths_in = sum(1 for d in out if d["type"] == "death")
+    items_in  = sum(1 for d in out if d["type"] == "item")
+    wards_in  = sum(1 for d in out if d["type"] == "ward_sen")
+    assert deaths_in == 2
+    assert items_in == 0
+    assert wards_in == 0
+
+
 def test_extract_decisions_includes_buybacks():
     match = synthetic_match()
     you = match["players"][0]

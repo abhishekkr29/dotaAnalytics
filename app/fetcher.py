@@ -248,9 +248,15 @@ def upsert_summary(conn, row: dict) -> None:
     )
 
 
-def sync_match(match_id: int, account_id: int | None = None) -> dict:
+def sync_match(match_id: int, account_id: int | None = None, force: bool = False) -> dict:
+    """Fetch a match (cache-aware by default) and upsert into the DB.
+
+    `force=True` bypasses the disk cache — use when the cached JSON might be a
+    stale unparsed snapshot from an earlier fetch and we want to re-pull to
+    pick up OpenDota's now-completed parse.
+    """
     with db.connect() as conn:
-        m = fetch_match(match_id)
+        m = fetch_match(match_id, force=force)
         upsert_match(conn, m, account_id=account_id)
     return {
         "match_id": match_id,

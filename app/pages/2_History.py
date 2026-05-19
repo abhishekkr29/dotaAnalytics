@@ -17,6 +17,48 @@ render_sidebar(aid)
 st.title("Match history")
 st.caption("Matches you've played that are cached locally. Click a row to load it in Analyzer.")
 
+# Action row: re-sync any of the user's matches that are still flagged unparsed.
+# Useful when OpenDota completes a parse after you first fetched it unparsed.
+with db.connect() as conn:
+    unparsed_count = conn.execute(
+        """SELECT COUNT(*) FROM user_matches um
+           JOIN matches m USING (match_id)
+           WHERE um.user_id = %s AND NOT m.parsed""",
+        (aid,),
+    ).fetchone()[0]
+
+if unparsed_count > 0:
+    cA, cB, _ = st.columns([2, 4, 2])
+    with cA:
+        if st.button(f"Re-sync {unparsed_count} unparsed", type="secondary",
+                     help="Force-refetch each unparsed match from OpenDota; updates parse flag if "
+                          "OpenDota has finished parsing it since you first cached it."):
+            from app import fetcher
+            with db.connect() as conn:
+                ids = [r[0] for r in conn.execute(
+                    """SELECT um.match_id FROM user_matches um
+                       JOIN matches m USING (match_id)
+                       WHERE um.user_id = %s AND NOT m.parsed""",
+                    (aid,),
+                ).fetchall()]
+            progress = st.progress(0.0, text=f"Re-syncing {len(ids)} matches...")
+            now_parsed = 0
+            for i, mid in enumerate(ids, 1):
+                try:
+                    r = fetcher.sync_match(mid, account_id=aid, force=True)
+                    if r["parsed"]:
+                        now_parsed += 1
+                except Exception:
+                    pass
+                progress.progress(i / len(ids), text=f"Re-syncing {i}/{len(ids)}")
+            st.success(f"Re-sync complete. {now_parsed} of {len(ids)} are now parsed.")
+            st.rerun()
+    with cB:
+        st.caption(
+            f"You have **{unparsed_count}** unparsed matches in your history. "
+            "If OpenDota has parsed any since the original fetch, re-syncing picks them up."
+        )
+
 with db.connect() as conn:
     rows = conn.execute(
         """

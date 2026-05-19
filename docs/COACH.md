@@ -1,10 +1,78 @@
-# Coach
+# Coach surfaces
 
-Deep reference for the `coach` command: hybrid (rules + LLM) review pipeline, prompt design, session memory, model selection, cost, tuning. For the high-level architecture view, see [ARCHITECTURE.md](ARCHITECTURE.md); for command syntax, see [API.md](API.md); for project scope, see [PLANNING.md](PLANNING.md).
+Three Claude-backed surfaces live in `app/coach.py`. All gate via `cost.check_budget` → `cost.charge`, accept BYO keys, and cache to disk. For high-level architecture see [ARCHITECTURE.md](ARCHITECTURE.md); for command syntax see [API.md](API.md); for scope see [PLANNING.md](PLANNING.md).
 
-## What `coach` does
+| Surface | Function | Output | Model | Cost | Cache path |
+|---|---|---|---|---|---|
+| **Full review** | `coach()` | ~700-word markdown narrative (5 sections) | Sonnet (default) | ~$0.03 | `data/reviews/<aid>/<mid>.md` |
+| **Per-leak recommendations** | `recommend_per_leak()` | 1-2 sentence concrete tactical advice per leak in `biggest_leaks` | Haiku (default) | ~$0.005 | `data/recommendations/<aid>/<mid>.json` |
+| **Blame zinger** | `assign_blame()` | 30-50 word Stanley-Parable-narrator paragraph blaming one player on the losing team | Haiku (default) | ~$0.001 | `data/blame/<aid>/<mid>__<slot>.json` |
 
-Takes a single match_id, produces a natural-language markdown coach review at `data/reviews/<match_id>.md`. Also maintains a per-account memory file at `data/coach_memory.json` that lets future reviews recognize recurring patterns across games.
+---
+
+## Per-leak recommendations (`recommend_per_leak`)
+
+For each entry in `biggest_leaks`, build a **causal pre-leak context** and ask Claude for one concrete tactical line ("QoP had Eul's online by 13:00; you walked in unblinked…"). One batched call returns a JSON dict keyed by leak index.
+
+**Context window: `[t-120s, t]` only** — events after the leak timestamp are explicitly excluded to prevent Haiku from inventing causal stories like "they smoked at t+47s." Regression-tested.
+
+**Per-leak context blob:**
+- Win-prob trajectory at `min-2`, `min`, `min+2`
+- Your hero, level, gold, key items at `t`
+- Each enemy player's hero, level, gold, KDA, items at `t`
+- Every kill in `[t-120s, t]` (causes)
+- Every smoke purchased by either team in `[t-120s, t-1s]` (gank setups)
+
+System prompt enforces: 1-2 sentences, <50 words per leak, reference specific items/heroes/timings/cooldowns, never reference post-leak events.
+
+Display: rendered inline under each leak card in the Analyzer page (`💡 _italic recommendation_`).
+
+---
+
+## Blame (`assign_blame`)
+
+Stanley Parable narrator voice picks ONE player on the losing team for a 30-50 word zinger.
+
+### Picker — role-aware composite score
+
+1. **Determine losing team**: `your_radiant` if you lost; `not your_radiant` if you won.
+2. **Infer each player's role** from GPM rank within team: rank 1 → `carry`, 2 → `mid`, 3 → `off`, 4 → `sup4`, 5 → `sup5`.
+3. **Score against role baselines** (Turbo at average rank):
+
+   | Role | deaths | gpm | hero_dmg | tower_dmg |
+   |---|---:|---:|---:|---:|
+   | carry | 4 | 600 | 25k | 5k |
+   | mid | 4 | 580 | 26k | 4k |
+   | off | 6 | 460 | 22k | 3k |
+   | sup4 | 8 | 380 | 16k | 1.5k |
+   | sup5 | 10 | 320 | 14k | 1.2k |
+
+4. **Composite** = `2.0·death_z + 1.5·gpm_z + 1.0·hero_dmg_z + 0.8·tower_dmg_z`. Each `z` is the percentage worse than baseline; positive = bad.
+
+5. **Highest composite wins**. A carry with 8 deaths (+100% vs baseline 4) gets blamed over a hard support with 12 deaths (+20% vs baseline 10). Raw deaths alone biased toward supports; role-normalization fixes this.
+
+### Exclude self default
+
+On losses, the picker excludes the user by default (`exclude_self=True`) — toxic-community traditional. On wins, the user isn't in the losing pool anyway.
+
+### Stanley Parable voice
+
+System prompt forbids slurs, real-world insults, demographic remarks. Toxicity is precision, not vulgarity. Rate-limited "the narrator…" self-references (Haiku overuses them as a tic). Prompt steers toward data-anchored openers: `"As per the death timeline,"`, `"By minute 14,"`, `"In a hero who scales with right-clicks…"`. Example:
+
+> *The Sniper — a Position 1 carry, allegedly — finished with 14k hero damage. The enemy Pudge, a support, did more. Both heroes have ranged abilities. One was used.*
+
+### Programmatic override
+
+```python
+coach.assign_blame(match_id, account_id=…, target_slot=132)   # blame a specific slot
+coach.assign_blame(match_id, account_id=…, exclude_self=False) # include yourself in the auto-pool
+```
+
+---
+
+## What `coach()` (the full review) does
+
+Takes a single match_id, produces a natural-language markdown coach review at `data/reviews/<account_id>/<match_id>.md`. Also maintains a per-account memory file at `data/coach_memory/<account_id>.json` that lets future reviews recognize recurring patterns across games.
 
 **Hybrid by design:**
 - **Rules (deterministic)** — extract narrative beats from `analyze()` output + raw match JSON. Phase grouping, recurring patterns, hero composition, summary stats. Same input → same beats.

@@ -2,11 +2,13 @@
 
 Dota 2 Turbo decision analyzer. Pulls match data via OpenDota, trains a Turbo-specific win-probability model conditioned on the player's rank bracket, and ranks the in-game decisions of any match by their impact on win probability — so you can see which calls helped and which were leaks.
 
-**Status:** Phases 1–4 + 5a–5b done. Multi-user web sign-in (Steam OpenID) and per-account memory + cost gating live as of 2026-05-17.
+**Status:** Phases 1–5 done. Multi-user web sign-in (Steam OpenID), per-account memory + cost gating, role-aware blame, and per-leak tactical recommendations all live as of 2026-05-19.
 
-- Trained win-prob model: `val_auc 0.854` on 997 Turbo matches (one shared model, rank-conditioned).
-- Analyze: signed Δ-win-prob attribution for 7 decision types (item / death / kill / roshan / smoke / ward_obs / ward_sen).
-- Coach: ~700-word markdown reviews with item-build prescription, farm-pattern critique, timing-window counterfactuals, and cross-match memory — per account.
+- Trained win-prob model: rank-bracket-conditioned XGBoost + per-bracket isotonic calibration across all 8 brackets (Herald → Immortal). 15,250 parsed matches; `val_auc_calibrated 0.80`.
+- Analyze: signed Δ-win-prob attribution for 8 decision types (item / death / kill / roshan / smoke / ward_obs / ward_sen / buyback). Decision clustering for same-fight deaths. Causal-attribution filter drops co-event false positives.
+- Coach: ~700-word markdown reviews with item-build prescription, farm-pattern critique, timing-window counterfactuals, and cross-match memory — per account, streaming.
+- **Per-leak tactical recommendations:** Haiku-generated 1-2 sentence advice per leak ("QoP had Eul's @13:00; you walked in unblinked..."). ~$0.005 per match.
+- **Stanley-Parable-narrator blame**: role-aware composite scorer picks the worst player on the losing team (yours on a loss, enemy on a win). 30-50 word zinger. ~$0.001 per match.
 - Multi-user: sign in with Steam, daily server-key budget cap, optional BYO Anthropic key for unlimited usage.
 
 Scope: **Turbo only** (`game_mode = 23`), self-hosted via docker compose. Personal CLI workflow still works exactly as before.
