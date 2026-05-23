@@ -1,12 +1,13 @@
 # Coach surfaces
 
-Three Claude-backed surfaces live in `app/coach.py`. All gate via `cost.check_budget` → `cost.charge`, accept BYO keys, and cache to disk. For high-level architecture see [ARCHITECTURE.md](ARCHITECTURE.md); for command syntax see [API.md](API.md); for scope see [PLANNING.md](PLANNING.md).
+Four Claude-backed surfaces live in `app/coach.py` + `app/chat.py`. All gate via `cost.check_budget` → `cost.charge`, accept BYO keys, and cache to disk. For high-level architecture see [ARCHITECTURE.md](ARCHITECTURE.md); for command syntax see [API.md](API.md); for scope see [PLANNING.md](PLANNING.md).
 
 | Surface | Function | Output | Model | Cost | Cache path |
 |---|---|---|---|---|---|
 | **Full review** | `coach()` | ~700-word markdown narrative (5 sections) | Sonnet (default) | ~$0.03 | `data/reviews/<aid>/<mid>.md` |
 | **Per-leak recommendations** | `recommend_per_leak()` | 1-2 sentence concrete tactical advice per leak in `biggest_leaks` | Haiku (default) | ~$0.005 | `data/recommendations/<aid>/<mid>.json` |
 | **Blame zinger** | `assign_blame()` | 30-50 word Stanley-Parable-narrator paragraph blaming one player on the losing team | Haiku (default) | ~$0.001 | `data/blame/<aid>/<mid>__<slot>.json` |
+| **Chat with the narrator** | `chat.chat()` | Multi-turn agentic chat about a match — uses 7 tools to pull current-match and cross-match data on demand | Haiku (default) | ~$0.005/msg | `data/chats/<aid>/<mid>.jsonl` |
 
 ---
 
@@ -66,6 +67,54 @@ System prompt forbids slurs, real-world insults, demographic remarks. Toxicity i
 ```python
 coach.assign_blame(match_id, account_id=…, target_slot=132)   # blame a specific slot
 coach.assign_blame(match_id, account_id=…, exclude_self=False) # include yourself in the auto-pool
+```
+
+---
+
+## Chat with the narrator (`chat.chat`)
+
+Multi-turn agentic chat about an analyzed match. Same Stanley-Parable voice as Blame, but conversational rather than a single zinger. Ships on the Analyzer page (expander below the coach review) and as `python -m app.cli chat <match_id> "<question>"`.
+
+### Tool use
+
+The model decides what data to pull rather than getting everything front-loaded. Seven tools wired in `app/chat.py`:
+
+| Tool | What it returns |
+|---|---|
+| `get_decision_timeline` | Ranked leaks + kept-doing-this from `analyze()` |
+| `get_player_deaths(killer_hero=…)` | User's deaths in this match, optionally filtered by enemy hero |
+| `get_item_timings(player_slot=…)` | Purchase log of key items for the user (default) or any slot |
+| `get_team_stats` | KDA / GPM / hero_dmg / tower_dmg per player on both teams |
+| `get_recurring_patterns` | Cross-match patterns from coach memory (which enemy heroes keep killing them) |
+| `get_recent_matches(hero_name=…, vs_hero_name=…)` | Recent parsed matches, filterable by your hero or enemy hero |
+| `get_hero_history(hero_name, as_enemy=…)` | Aggregate stats playing or facing one hero across all parsed matches |
+
+Hard cap: **6 tool roundtrips per user message**. Past that, the loop terminates and returns whatever the model has produced (with `tool_cap_hit=True`).
+
+### History
+
+Each (user, assistant) pair is appended to `data/chats/<aid>/<mid>.jsonl`. On next turn, the last `CHAT_HISTORY_TURNS = 10` pairs are replayed to the model — tool roundtrips from prior turns are NOT replayed (the model re-calls tools as needed; Haiku makes this cheap).
+
+### Voice constraints
+
+Same forbidden-tic list as Blame ("the narrator has reviewed/observes/notes") — at most one self-reference per reply, zero is better. Anchored in data: "you died eleven times" beats "you died a lot." Replies are short (2–5 sentences typical). Off-match Dota questions are answered but flagged in-voice ("Stepping back from this particular catastrophe…").
+
+### Programmatic
+
+```python
+from app import chat
+result = chat.chat(8807224804, account_id=123456789,
+                    user_message="what could I have done about Pudge?")
+print(result["assistant"])
+# result also has: tool_calls, cost_cents, usage, model, tool_cap_hit
+```
+
+CLI:
+
+```bash
+python -m app.cli chat <match_id> "your question" --account 123456789
+python -m app.cli chat <match_id> "your question" -v   # also print tool_calls + usage
+python -m app.cli chat <match_id> "your question" --no-persist
 ```
 
 ---
@@ -184,7 +233,7 @@ Single file: `data/coach_memory.json`. Per-account state (no DB row — easier t
 
 ```json
 {
-  "account_id": 446619601,
+  "account_id": 123456789,
   "history": [
     {
       "match_id": 8810000000,
@@ -297,7 +346,7 @@ For the project-wide secret-handling story, see [PLANNING.md → Security & secr
 - **Non-deterministic prose.** Same match, different review each call. Factual content is stable (rules-driven), prose stylistically varies. Re-run if you want a different angle.
 - **Prompt caching may not activate** at current sizes. Sonnet 4.6's minimum cacheable prefix is 2048 tokens; the system prompt is below that. `cache_read_input_tokens` will be 0 — by design, not a bug.
 - **Recurring-pattern surfacing needs history.** First 1–2 reviews won't have memory entries to lean on; coach will read as a one-off. Patterns emerge by the 3rd review.
-- **Single-account scope.** Memory is keyed by the configured `ACCOUNT_ID`. Multi-account requires keying memory entries by `account_id` — not yet supported.
+- **Single-account scope per file.** Memory is keyed by `account_id` (one JSON per user under `data/coach_memory/`).
 - **Cost scales with match length.** Long matches → more decisions → bigger user prompt → more input tokens. Late-game brawls are the most expensive to review.
 - **Top-K guidance.** Default `--top-k 6` means up to 12 decisions (6 leaks + 6 kept-doing) reach the prompt. Bumping past 10 each adds noise without much value — Claude does a better job with fewer, more impactful events.
 

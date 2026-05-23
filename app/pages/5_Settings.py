@@ -4,7 +4,7 @@ import anthropic
 import streamlit as st
 
 from app import cost, crypto, db
-from app.web_auth import logout, render_sidebar, require_login
+from app.web_auth import display_name, logout, render_sidebar, require_login
 
 st.set_page_config(page_title="Settings · dotaAnalytics", page_icon="⚙️", layout="wide")
 
@@ -21,9 +21,10 @@ with db.connect() as conn:
     ).fetchone()
 has_byo, steam_id, last_seen = (row or (False, None, None))
 
-c1, c2 = st.columns(2)
-c1.metric("Account", aid)
-c2.metric("Steam ID 64", steam_id if steam_id else "—")
+c1, c2, c3 = st.columns(3)
+c1.metric("Player", display_name(aid))
+c2.metric("Account ID", aid)
+c3.metric("Steam ID 64", steam_id if steam_id else "—")
 
 st.divider()
 st.subheader("Anthropic API key (BYO)")

@@ -8,6 +8,7 @@ import pandas as pd
 import streamlit as st
 
 from app import analyze as analyze_mod
+from app import chat as chat_mod
 from app import coach as coach_mod
 from app import config, cost, db, fetcher
 from app.web_auth import render_sidebar, require_login
@@ -19,13 +20,18 @@ render_sidebar(aid)
 
 st.title("Match analyzer")
 
-default_match = str(st.session_state.pop("selected_match_id", "") or "")
+# When History → Analyzer hands off a selected match, seed the keyed widget once.
+# Using a session_state key on the text_input is what makes its value survive the
+# rerun that fires when the user clicks Analyze (otherwise the widget resets to
+# empty after the one-shot `selected_match_id` is popped).
+if "selected_match_id" in st.session_state:
+    st.session_state["match_id_input"] = str(st.session_state.pop("selected_match_id"))
 
 c_in, c_btn = st.columns([4, 1])
 with c_in:
     match_id_str = st.text_input(
         "Match ID",
-        value=default_match,
+        key="match_id_input",
         placeholder="e.g. 8807224804  (must be a Turbo match you played in)",
         label_visibility="collapsed",
     )
@@ -144,6 +150,7 @@ if analyze_btn and match_id_str:
     st.session_state.pop("review_usage", None)
     st.session_state.pop("recommendations", None)
     st.session_state.pop("blame", None)
+    st.session_state.pop("chat_messages", None)
 
 
 # If the user hit Refresh on the unparsed UI, re-check parse status for the
@@ -351,3 +358,64 @@ if "report" in st.session_state and st.session_state.get("match_id"):
                 **st.session_state.review_usage,
                 "cents_charged": st.session_state.get("review_cost_cents", 0),
             })
+
+    # ── Chat with the narrator ────────────────────────────────────────────
+    st.divider()
+    mid = st.session_state.match_id
+    chat_key = f"chat_messages_{mid}"
+    if chat_key not in st.session_state:
+        # Lazy-load persisted history exactly once per (match, session).
+        st.session_state[chat_key] = chat_mod.load_history(aid, mid)
+
+    with st.expander("💬 Chat with the narrator · ~$0.005/msg · uses match + cross-match history",
+                     expanded=False):
+        st.caption(
+            "Ask anything about this match or your wider history — _\"why did I keep dying "
+            "to QoP\", \"is this a recurring problem\", \"what should I have built\"_. "
+            "Stanley Parable narrator voice. Uses Haiku + tool calls to pull data."
+        )
+
+        c_clear, _ = st.columns([1, 4])
+        with c_clear:
+            if st.session_state[chat_key] and st.button(
+                "🗑️ Clear chat", help="Wipes the persisted chat log for this match"
+            ):
+                chat_mod.clear_history(aid, mid)
+                st.session_state[chat_key] = []
+                st.rerun()
+
+        # Replay history
+        for turn in st.session_state[chat_key]:
+            role = turn.get("role", "user")
+            with st.chat_message(role, avatar="🎭" if role == "assistant" else None):
+                st.markdown(turn.get("content", ""))
+                tcs = turn.get("tool_calls") or []
+                if tcs:
+                    with st.expander(f"🔧 {len(tcs)} tool call{'s' if len(tcs)!=1 else ''}",
+                                     expanded=False):
+                        for tc in tcs:
+                            st.caption(f"`{tc['name']}({', '.join(f'{k}={v!r}' for k,v in (tc.get('input') or {}).items())})`")
+
+        # Input — appears at the bottom of the expander
+        if user_msg := st.chat_input(
+            "Ask the narrator about this match...",
+            key=f"chat_input_{mid}",
+        ):
+            with st.chat_message("user"):
+                st.markdown(user_msg)
+            with st.chat_message("assistant", avatar="🎭"):
+                with st.spinner("The narrator consults the data..."):
+                    try:
+                        result = chat_mod.chat(mid, account_id=aid, user_message=user_msg)
+                    except cost.BudgetExceeded as e:
+                        st.error(str(e))
+                        st.stop()
+                    except SystemExit as e:
+                        st.error(str(e))
+                        st.stop()
+                st.markdown(result["assistant"])
+                if result.get("tool_cap_hit"):
+                    st.warning("Tool-call budget reached — narrator may have wrapped up early.")
+            # Reload from disk so session_state stays in sync with the persisted log.
+            st.session_state[chat_key] = chat_mod.load_history(aid, mid)
+            st.rerun()

@@ -13,6 +13,11 @@ cd "$(dirname "$0")/.."
 
 command -v docker >/dev/null 2>&1 || { echo "docker is required"; exit 1; }
 
+# Account id used by CLI checks that need --account. The smoke only verifies
+# flag wiring + graceful error messages, so any integer works; override with
+# `SMOKE_ACCOUNT_ID=<your-id> bash scripts/smoke.sh` if you want richer checks.
+SMOKE_ACCOUNT_ID="${SMOKE_ACCOUNT_ID:-12345}"
+
 PASS=0; FAIL=0; SKIP=0
 FAILED=()
 
@@ -48,14 +53,32 @@ check "docker compose build (cached or fresh)" docker compose build
 check_contains "CLI dispatcher exposes coach"   "coach"     _dc --help
 check_contains "CLI dispatcher exposes analyze" "analyze"   _dc --help
 check_contains "CLI dispatcher exposes train"   "train"     _dc --help
+check_contains "CLI dispatcher exposes chat"    "chat"      _dc --help
 check "web service responds on :8501" bash -c "docker compose up -d web >/dev/null 2>&1 && sleep 3 && curl -fsS -o /dev/null http://localhost:8501"
 check "auth service responds on :8502/healthz" bash -c "docker compose up -d auth >/dev/null 2>&1 && sleep 3 && curl -fsS http://localhost:8502/healthz | grep -q '\"ok\":true'"
 check_contains "crypto gen produces a Fernet key" "=" docker compose run --rm app python -m app.crypto gen
 
 echo
 echo "=== positive path (no data required) ==="
-check_contains "account resolves from .env" "account_id: 446619601" _dc account
-check_contains "profile fetches/cached"     "rank_tier"              _dc profile
+check_contains "account requires --account (no env fallback)" "the following arguments are required: --account" _dc account
+check_contains "account echoes the passed id" "account_id: $SMOKE_ACCOUNT_ID" _dc account --account "$SMOKE_ACCOUNT_ID"
+# Profile either returns a JSON blob with "personaname" (real account) or a
+# friendly "not found on OpenDota" SystemExit (placeholder SMOKE_ACCOUNT_ID).
+# Both prove the OpenDota wiring works without leaking the api_key.
+out=$(_dc profile --account "$SMOKE_ACCOUNT_ID" 2>&1) || true
+if printf '%s' "$out" | grep -qE '("personaname"|not found on OpenDota)'; then
+    printf '  [PASS] profile fetches/cached\n'; PASS=$((PASS+1))
+else
+    printf '  [FAIL] profile fetches/cached — unexpected output: %s\n' "$(printf '%s' "$out" | tail -1)"
+    FAIL=$((FAIL+1)); FAILED+=("profile fetches/cached")
+fi
+# Regression: OpenDota api_key must NEVER appear unmasked in error output.
+if printf '%s' "$out" | grep -qE 'api_key=[a-zA-Z0-9-]+'; then
+    printf '  [FAIL] OpenDota api_key leaked in profile error output\n'
+    FAIL=$((FAIL+1)); FAILED+=("api_key leak")
+else
+    printf '  [PASS] profile error output masks api_key\n'; PASS=$((PASS+1))
+fi
 check_contains "snapshots runs cleanly"     "matches_processed"      _dc snapshots
 check "matches + snapshots tables both exist" \
   bash -c "docker compose exec -T db psql -U dota -d dota -tA -c \"SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename IN ('matches','snapshots')\" | sort | tr '\n' ',' | grep -q 'matches,snapshots,'"
@@ -84,7 +107,7 @@ else
 fi
 # Accept either "not found on OpenDota" (when their API returns 404)
 # or "currently unreachable" (when their service is degraded and returns 5xx instead).
-out=$(_dc analyze 1 2>&1) || true
+out=$(_dc analyze 1 --account "$SMOKE_ACCOUNT_ID" 2>&1) || true
 if printf '%s' "$out" | grep -qE '(not found on OpenDota|currently unreachable)'; then
     printf '  [PASS] analyze handles missing/unreachable match gracefully\n'; PASS=$((PASS+1))
 else
@@ -94,16 +117,17 @@ fi
 # Match 8810012394 used to be unparsed in DB; after wipes its state varies — accept any
 # rejection (unparsed / not-in-match / not-found / unreachable) since all of those exercise
 # the analyze guards correctly.
-out=$(_dc analyze 8810012394 2>&1) || true
+out=$(_dc analyze 8810012394 --account "$SMOKE_ACCOUNT_ID" 2>&1) || true
 if printf '%s' "$out" | grep -qE '(not parsed yet|is not in match|not found on OpenDota|currently unreachable|no model at)'; then
     printf '  [PASS] analyze rejects un-processable match gracefully\n'; PASS=$((PASS+1))
 else
     printf '  [FAIL] analyze on 8810012394 — unexpected output: %s\n' "$(printf '%s' "$out" | tail -1)"
     FAIL=$((FAIL+1)); FAILED+=("analyze rejects un-processable match")
 fi
+check_contains "analyze without --account fails fast" "the following arguments are required: --account" _dc analyze 1
 
 if ! grep -E '^ANTHROPIC_API_KEY=.+$' .env >/dev/null 2>&1; then
-    check_contains "coach refuses to run without API key" "ANTHROPIC_API_KEY is not set" _dc coach 8810012394
+    check_contains "coach refuses to run without API key" "ANTHROPIC_API_KEY is not set" _dc coach 8810012394 --account "$SMOKE_ACCOUNT_ID"
 else
     skip "coach refuses to run without API key" "key is set in .env; skipping no-key check"
 fi
@@ -123,7 +147,7 @@ PARSED_ID="$(docker compose exec -T db psql -U dota -d dota -tA \
 
 if [ -n "$PARSED_ID" ] && [ -f data/turbo_winprob.json ]; then
     # Analyze must either succeed OR exit cleanly with "not in match" (bracket data has random players)
-    out=$(_dc analyze "$PARSED_ID" 2>&1) || true
+    out=$(_dc analyze "$PARSED_ID" --account "$SMOKE_ACCOUNT_ID" 2>&1) || true
     if printf '%s' "$out" | grep -qE '("win_prob_curve"|is not in match)'; then
         printf '  [PASS] analyze runs cleanly on parsed match %s\n' "$PARSED_ID"
         PASS=$((PASS+1))

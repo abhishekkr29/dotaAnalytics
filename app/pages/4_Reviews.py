@@ -5,7 +5,7 @@ from datetime import datetime
 import streamlit as st
 
 from app import config
-from app.web_auth import render_sidebar, require_login
+from app.web_auth import display_name, render_sidebar, require_login
 
 st.set_page_config(page_title="Reviews · dotaAnalytics", page_icon="📝", layout="wide")
 
@@ -21,7 +21,7 @@ if not md_files:
     st.info("No coach reviews yet — generate one from the Analyzer page.")
     st.stop()
 
-st.caption(f"{len(md_files)} reviews saved for account `{aid}`.")
+st.caption(f"{len(md_files)} reviews saved for **{display_name(aid)}**.")
 
 def _label(p):
     when = datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d %H:%M")

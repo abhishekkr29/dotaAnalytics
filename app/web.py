@@ -3,7 +3,7 @@
 import streamlit as st
 
 from app import config, db
-from app.web_auth import current_user, render_sidebar
+from app.web_auth import current_user, display_name, render_sidebar
 
 st.set_page_config(page_title="dotaAnalytics", page_icon="🎯", layout="wide")
 
@@ -17,16 +17,11 @@ if aid is None:
         "We use Steam OpenID — you sign in on Steam's site, we only receive your Steam ID. "
         "After sign-in you'll be redirected back here, logged in."
     )
-    st.divider()
-    st.caption(
-        "**Local dev shortcut:** set `ACCOUNT_ID` in `.env` to auto-log-in as that account "
-        "without going through Steam."
-    )
     st.stop()
 
 render_sidebar(aid)
 
-st.title(f"Welcome, account `{aid}`")
+st.title(f"Welcome, {display_name(aid)}")
 st.caption("Use the sidebar to navigate.")
 
 # Onboarding — show the bracket-fetch hint if no matches cached yet.

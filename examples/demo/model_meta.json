@@ -1,0 +1,89 @@
+{
+  "n_rows": 391013,
+  "n_matches": 15250,
+  "n_train_rows": 313020,
+  "n_val_rows": 77993,
+  "val_log_loss": 0.5352447382766862,
+  "val_auc": 0.7986610629588957,
+  "val_log_loss_calibrated": 0.5285187282492252,
+  "val_auc_calibrated": 0.8024693267726044,
+  "best_iteration": 88,
+  "feature_cols": [
+    "minute",
+    "gold_adv",
+    "xp_adv",
+    "tower_kills_radiant",
+    "tower_kills_dire",
+    "kills_radiant",
+    "kills_dire",
+    "roshan_kills",
+    "avg_rank_tier",
+    "r_hero_1",
+    "r_hero_2",
+    "r_hero_3",
+    "r_hero_4",
+    "r_hero_5",
+    "d_hero_1",
+    "d_hero_2",
+    "d_hero_3",
+    "d_hero_4",
+    "d_hero_5"
+  ],
+  "calibration": {
+    "brackets_fitted": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "min_samples_threshold": 50,
+    "bucket_stats": [
+      {
+        "bucket": 1,
+        "n": 10719,
+        "fitted": true
+      },
+      {
+        "bucket": 2,
+        "n": 11634,
+        "fitted": true
+      },
+      {
+        "bucket": 3,
+        "n": 11460,
+        "fitted": true
+      },
+      {
+        "bucket": 4,
+        "n": 13417,
+        "fitted": true
+      },
+      {
+        "bucket": 5,
+        "n": 13980,
+        "fitted": true
+      },
+      {
+        "bucket": 6,
+        "n": 11488,
+        "fitted": true
+      },
+      {
+        "bucket": 7,
+        "n": 5088,
+        "fitted": true
+      },
+      {
+        "bucket": 8,
+        "n": 207,
+        "fitted": true
+      }
+    ]
+  },
+  "trained_at": "2026-05-19T01:03:58+00:00",
+  "parsed_match_count_at_train": 15250
+}

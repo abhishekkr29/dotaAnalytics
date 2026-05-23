@@ -27,7 +27,7 @@ Steam OpenID 2.0 is the only sign-in method.
 
 ### Dev shortcut
 
-`app.web_auth._auto_login_dev` will use `$ACCOUNT_ID` from `.env` if no JWT is present in the session. This is intentional — it preserves the original single-user local workflow. To disable, unset `ACCOUNT_ID` in `.env`.
+There is no `ACCOUNT_ID` env-var fallback anywhere in the system. Web sessions require a valid Steam JWT minted by `/auth/steam/callback`. CLI subcommands require `--account <id>` on the command line.
 
 ### Session lifetime
 
@@ -67,13 +67,14 @@ This gate prevents one user from burning the operator's entire Anthropic budget.
 
 - `data/` is a bind-mounted host directory, accessible to whoever can read the host filesystem.
 - Reviews (`data/reviews/<aid>/*.md`) are per-account but not separately permissioned. Operator can read everyone's.
+- Chat logs (`data/chats/<aid>/<mid>.jsonl`) contain the user's free-form questions to the narrator agent + assistant replies. Same exposure class as reviews — operator-readable. Cleared per-match via the Analyzer UI's 🗑️ button or `chat.clear_history()`.
 
 ## Network surface
 
 | Port | Service | Auth |
 |---|---|---|
 | 5432 | Postgres | DB password only — **don't expose to the public internet** |
-| 8501 | Streamlit web | JWT (per-page) or `ACCOUNT_ID` env fallback |
+| 8501 | Streamlit web | JWT (per-page) — no env-var fallback |
 | 8502 | Auth (FastAPI) | None on `/healthz`; OpenID redirect for `/auth/steam/login`; signed Steam callback on `/auth/steam/callback` |
 
 For a hosted deploy: terminate TLS in front, restrict 5432 to the application network, set `STEAM_OPENID_REALM` and `AUTH_PUBLIC_URL` to your public HTTPS auth host, and put both 8501 and 8502 behind the same domain (e.g. `app.example.com` and `app.example.com/auth`).
@@ -88,4 +89,4 @@ For a hosted deploy: terminate TLS in front, restrict 5432 to the application ne
 - Secret-leak detection in CI
 - Compliance posture (GDPR, etc.)
 
-These are the visible gaps before any real production launch — `docs/COMMERCIAL.md` Phase A covers most of them.
+These are the visible gaps before any real production launch. None of them block self-hosted use by a small trusted group, which is the project's intended scope.

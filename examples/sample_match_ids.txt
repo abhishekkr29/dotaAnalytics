@@ -1,0 +1,30 @@
+# How to find a parsed Turbo match ID to try the demo
+#
+# Valve only retains replays for ~14 days, so any list of "sample" IDs goes
+# stale fast. You're a Dota player — pick one of your own recent Turbo games
+# and use that.
+#
+# Option 1 — your own dotabuff / opendota page (easiest)
+#   1. Go to https://www.dotabuff.com/players/<your-friend-code>/matches
+#      or  https://www.opendota.com/players/<your-friend-code>/matches
+#   2. Filter Game Mode = Turbo
+#   3. Click any match from the last ~2 weeks
+#   4. The match ID is in the URL: https://www.opendota.com/matches/<MATCH_ID>
+#   5. On OpenDota, check the row says "Parsed: yes" — if not, click
+#      "Request Parse" on the OpenDota match page (~5–30 min wait).
+#
+# Option 2 — pro / public match firehose
+#   1. https://www.opendota.com/matches
+#   2. Filter Game Mode = Turbo
+#   3. Click "Parsed" tab
+#   4. Grab any match ID from the URL
+#
+# Then:
+#   bash examples/install_demo.sh
+#   docker compose run --rm app python -m app.cli analyze <MATCH_ID> --account <YOUR_ACCOUNT_ID>
+#
+# Where <YOUR_ACCOUNT_ID> is your 9-digit Dota friend code (visible in your
+# Steam profile or in any OpenDota player URL). For analyze to surface YOUR
+# decisions you have to be in the match — otherwise you'll get a clean
+# "account <id> is not in match <id>" error, which is fine for a wiring test
+# but doesn't show you anything interesting.

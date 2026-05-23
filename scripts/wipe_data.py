@@ -16,9 +16,9 @@ Default mode — USER WIPE (cheap to rebuild)
     - data/heroes.json                      (hero metadata)
 
   Result: sign-in state and review history are gone; the user re-signs in via
-  Steam OpenID (or via $ACCOUNT_ID env fallback) and the system still has the
-  full trained model + 15k+ parsed matches. They'll just need to re-bracket-fetch
-  to populate THEIR user_matches links.
+  Steam OpenID and the system still has the full trained model + 15k+ parsed
+  matches. They'll just need to re-bracket-fetch to populate THEIR user_matches
+  links.
 
 --include-matches — NUCLEAR WIPE (rare; only when training data is bad)
   Default mode PLUS:
@@ -179,7 +179,7 @@ def main() -> int:
         print("  1. bash scripts/collect_data.sh    # gather across 7 brackets")
         print("  2. bash scripts/train_model.sh     # build model + calibrators + baselines")
     else:
-        print("  - Sign in to the web UI via Steam OpenID (or $ACCOUNT_ID env fallback)")
+        print("  - Sign in to the web UI via Steam OpenID")
         print("  - The trained model + baselines are still in place; nothing to retrain")
     return 0
 

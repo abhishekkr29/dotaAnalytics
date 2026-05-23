@@ -1,24 +1,52 @@
 # dotaAnalytics
 
-Dota 2 Turbo decision analyzer. Pulls match data via OpenDota, trains a Turbo-specific win-probability model conditioned on the player's rank bracket, and ranks the in-game decisions of any match by their impact on win probability — so you can see which calls helped and which were leaks.
+[![tests](https://github.com/abhishekkr29/dotaAnalytics/actions/workflows/test.yml/badge.svg)](https://github.com/abhishekkr29/dotaAnalytics/actions/workflows/test.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![python: 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](Dockerfile)
 
-**Status:** Phases 1–5 done. Multi-user web sign-in (Steam OpenID), per-account memory + cost gating, role-aware blame, and per-leak tactical recommendations all live as of 2026-05-19.
+A self-hosted Dota 2 Turbo coaching tool that combines an XGBoost win-probability model with a Claude-powered post-mortem coach. Paste a match ID; get a per-minute win-prob curve, a ranked list of decisions by Δwp, a written coach review, and an agentic chat-with-the-narrator surface.
 
-- Trained win-prob model: rank-bracket-conditioned XGBoost + per-bracket isotonic calibration across all 8 brackets (Herald → Immortal). 15,250 parsed matches; `val_auc_calibrated 0.80`.
-- Analyze: signed Δ-win-prob attribution for 8 decision types (item / death / kill / roshan / smoke / ward_obs / ward_sen / buyback). Decision clustering for same-fight deaths. Causal-attribution filter drops co-event false positives.
-- Coach: ~700-word markdown reviews with item-build prescription, farm-pattern critique, timing-window counterfactuals, and cross-match memory — per account, streaming.
-- **Per-leak tactical recommendations:** Haiku-generated 1-2 sentence advice per leak ("QoP had Eul's @13:00; you walked in unblinked..."). ~$0.005 per match.
-- **Stanley-Parable-narrator blame**: role-aware composite scorer picks the worst player on the losing team (yours on a loss, enemy on a win). 30-50 word zinger. ~$0.001 per match.
-- Multi-user: sign in with Steam, daily server-key budget cap, optional BYO Anthropic key for unlimited usage.
+> **TL;DR for the curious:** the ML model is ~15k parsed Turbo matches and scores 0.80 val-AUC after per-bracket isotonic calibration. The coach attributes signed Δwp to 8 decision types (item/death/kill/roshan/smoke/ward_obs/ward_sen/buyback), filters out causal false positives, then asks Claude to write up the *why* with bracket-baseline item timings and farm snapshots. There's also a [Stanley-Parable narrator](docs/COACH.md#blame-assign_blame) feature that picks one player on the losing team and roasts them in 30–50 words.
 
-Scope: **Turbo only** (`game_mode = 23`), self-hosted via docker compose. Personal CLI workflow still works exactly as before.
+## Features
+
+- **Win-probability model** — rank-bracket-conditioned XGBoost + per-bracket isotonic calibration (Herald → Immortal). ~15k parsed matches; `val_auc_calibrated 0.80`.
+- **Decision attribution** — signed Δ-win-prob impact for 8 decision types. Decision clustering for same-fight deaths. Causal filter drops co-event false positives.
+- **Coach review** — ~700-word markdown writeup with item-build prescription, farm-pattern critique, timing-window counterfactuals, and cross-match memory. Streaming.
+- **Per-leak tactical recommendations** — Haiku-generated, 1–2 sentences per leak ("QoP had Eul's @13:00; you walked in unblinked..."). ~$0.005/match.
+- **Stanley-Parable narrator blame** — role-aware composite scorer picks the worst player on the losing team. 30–50 word zinger. ~$0.001/match.
+- **Chat with the narrator** — agentic Q&A. Seven tools pull match + cross-match data on demand ("what could I have done about repeated deaths to QoP?"). ~$0.005/message.
+- **Multi-user** — Steam OpenID sign-in, per-account memory, BYO Anthropic key for unlimited usage, server-key daily cap for everyone else.
+
+**Scope:** Turbo only (`game_mode = 23`), self-hosted via docker compose. Anthropic features are optional — `analyze`, `train`, and the web UI all work without an API key.
+
+## Try the demo (5 minutes, no ML setup)
+
+A pre-trained model + supporting artifacts ships in `examples/demo/`. After cloning:
+
+```bash
+cp .env.example .env
+# Edit .env — JWT_SECRET and FERNET_KEY (see below). ANTHROPIC_API_KEY optional.
+
+docker compose build
+docker compose run --rm app python -m app.crypto gen   # → paste output as FERNET_KEY in .env
+
+bash examples/install_demo.sh                          # copies the demo bundle into data/
+
+# Pick any parsed Turbo match ID (see examples/sample_match_ids.txt for some,
+# or grab a fresh one from https://www.opendota.com — filter Game Mode = Turbo).
+docker compose run --rm app python -m app.cli analyze <match_id> --account 12345
+```
+
+You'll get a JSON report with the per-minute win-prob curve and the ranked decisions. For the coach / chat / blame features, also set `ANTHROPIC_API_KEY` in `.env`.
+
+See [`examples/README.md`](examples/README.md) for caveats (patch staleness, calibrator coverage).
 
 ## First-time setup
 
 ```bash
 cp .env.example .env
 # Edit .env — at minimum:
-#  - ACCOUNT_ID            (optional; only for single-user CLI fallback)
 #  - ANTHROPIC_API_KEY     (optional; server-side default for the coach)
 #  - JWT_SECRET            (required for web sign-in; any long random string)
 #  - FERNET_KEY            (required to store BYO keys; generate below)
@@ -40,9 +68,9 @@ open http://localhost:8501
 
 Click **Sign in with Steam** (the `auth` service on `:8502` handles the OpenID handshake and mints a JWT). After sign-in you land back in the app, logged in.
 
-Pages: **Analyzer** (paste a match ID → win-prob + decisions + coach review) · **History** (cached matches you played) · **Patterns** (your coach memory visualised) · **Reviews** (past markdown reviews) · **Settings** (BYO Anthropic key, daily/monthly spend, sign-out).
+Pages: **Analyzer** (paste a match ID → win-prob + decisions + coach review + agentic chat with the narrator) · **History** (cached matches you played) · **Patterns** (your coach memory visualised) · **Reviews** (past markdown reviews) · **Settings** (BYO Anthropic key, daily/monthly spend, sign-out).
 
-**Local-dev shortcut:** with `ACCOUNT_ID` set in `.env` and no JWT in the session, the web app auto-signs you in as that account — your original single-user workflow keeps working with zero Steam round-trip.
+Web sign-in is required even in local dev — Steam OpenID round-trips through Steam's site and back to `localhost:8502`. There is no `ACCOUNT_ID` env-var auto-login or CLI fallback anywhere — `--account <id>` must be passed explicitly on every CLI subcommand.
 
 ## Bootstrapping training data across all 7 brackets
 
@@ -87,18 +115,20 @@ For one-rank top-ups later (no full wipe needed), use `bracket-fetch --rank <N>`
 ## Quick start — CLI (single-user or per-account)
 
 ```bash
-docker compose run --rm app python -m app.cli profile --account 446619601
-docker compose run --rm app python -m app.cli bracket-fetch --account 446619601 --limit 500
+export ACCOUNT=<your-account-id>          # your 9-digit OpenDota / Dota friend code (e.g. 446619601)
+docker compose run --rm app python -m app.cli profile --account $ACCOUNT
+docker compose run --rm app python -m app.cli bracket-fetch --account $ACCOUNT --limit 500
 docker compose run --rm app python -m app.cli request-parses --limit 500
 # wait ~15 min, repeat refresh+request until enough are parsed:
-docker compose run --rm app python -m app.cli refresh-parses --account 446619601 --limit 500
+docker compose run --rm app python -m app.cli refresh-parses --account $ACCOUNT --limit 500
 docker compose run --rm app python -m app.cli snapshots
 docker compose run --rm app python -m app.cli train
-docker compose run --rm app python -m app.cli analyze --account 446619601 <match_id>
-docker compose run --rm app python -m app.cli coach   --account 446619601 <match_id>
+docker compose run --rm app python -m app.cli analyze --account $ACCOUNT <match_id>
+docker compose run --rm app python -m app.cli coach   --account $ACCOUNT <match_id>
+docker compose run --rm app python -m app.cli chat    --account $ACCOUNT <match_id> "what could I have done about Pudge?"
 ```
 
-`--account` defaults to `$ACCOUNT_ID` from `.env` if omitted — so the original commands still work exactly as before for single-user setups.
+`--account` is required on every CLI subcommand that operates on a user — there is no env-var fallback. Web flows source the account from the Steam JWT.
 
 A smoke test (`scripts/smoke.sh`) covers the CLI surface, the auth service, and the multi-user tables. Postgres comes up automatically; schema is bootstrapped on every CLI/service start.
 
@@ -117,7 +147,6 @@ A smoke test (`scripts/smoke.sh`) covers the CLI surface, the auth service, and 
 Single `.env` file at the repo root (gitignored). Full reference in `.env.example`:
 
 ```
-ACCOUNT_ID=446619601                 # optional; single-user CLI fallback / dev-env auto-login
 ANTHROPIC_API_KEY=sk-ant-...         # server-side default key for coach; per-user BYO via Settings page
 JWT_SECRET=long-random-string        # signs the auth ↔ web handshake
 FERNET_KEY=base64-32-bytes           # encrypts BYO Anthropic keys at rest

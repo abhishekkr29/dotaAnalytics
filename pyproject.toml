@@ -1,0 +1,29 @@
+# Project metadata + tool configuration.
+# Not used by pip — runtime deps still live in requirements.txt.
+# This file exists so contributors get a consistent linter config.
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["data", ".venv", "__pycache__"]
+
+[tool.ruff.lint]
+# Conservative day-one set — essentials only. Once the codebase passes cleanly
+# we can opt into B (bugbear) and UP (pyupgrade) in follow-up PRs.
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes (unused imports, undefined names)
+    "W",    # pycodestyle warnings
+    "I",    # isort
+]
+ignore = [
+    "E501",  # line-too-long — enforced by formatter, not linter
+    "E731",  # don't-assign-lambda — used deliberately in a few spots
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["F401", "F811"]  # test fixtures may shadow / re-import
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

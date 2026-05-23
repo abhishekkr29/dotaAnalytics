@@ -1,12 +1,14 @@
 import argparse
 import json
 
-from app import config, db, fetcher
+import requests
+
+from app import db, fetcher
 
 
 def _account(args: argparse.Namespace) -> int:
-    """Resolve account id for any subcommand: --account beats $ACCOUNT_ID."""
-    return config.resolve_account_id(getattr(args, "account", None))
+    """Return the required --account flag (argparse already validated presence)."""
+    return int(args.account)
 
 
 def cmd_account(args: argparse.Namespace) -> None:
@@ -14,7 +16,14 @@ def cmd_account(args: argparse.Namespace) -> None:
 
 
 def cmd_profile(args: argparse.Namespace) -> None:
-    p = fetcher.fetch_profile(_account(args), force=args.refresh)
+    aid = _account(args)
+    try:
+        p = fetcher.fetch_profile(aid, force=args.refresh)
+    except requests.HTTPError as e:
+        status = e.response.status_code if e.response is not None else None
+        if status == 404:
+            raise SystemExit(f"account {aid} not found on OpenDota") from None
+        raise
     print(json.dumps({
         "account_id": p.get("profile", {}).get("account_id"),
         "personaname": p.get("profile", {}).get("personaname"),
@@ -115,6 +124,7 @@ def _stream_to_stdout(text: str) -> None:
 
 def cmd_coach(args: argparse.Namespace) -> None:
     import sys
+
     from app import coach
 
     on_chunk = _stream_to_stdout if args.stream else None
@@ -128,12 +138,33 @@ def cmd_coach(args: argparse.Namespace) -> None:
     print(json.dumps(result, indent=2))
 
 
+def cmd_chat(args: argparse.Namespace) -> None:
+    from app import chat
+    result = chat.chat(
+        args.match_id,
+        account_id=_account(args),
+        user_message=args.message,
+        model=args.model,
+        persist=not args.no_persist,
+    )
+    print(result["assistant"])
+    if args.verbose:
+        print("\n---")
+        print(json.dumps({
+            "model": result["model"],
+            "cost_cents": result["cost_cents"],
+            "tool_calls": result["tool_calls"],
+            "usage": result["usage"],
+            "tool_cap_hit": result.get("tool_cap_hit", False),
+        }, indent=2))
+
+
 def _account_parent() -> argparse.ArgumentParser:
     """Reusable parent parser supplying --account to subcommands that need it."""
     parent = argparse.ArgumentParser(add_help=False)
     parent.add_argument(
-        "--account", type=int, default=None,
-        help="Account ID to operate against (defaults to $ACCOUNT_ID)",
+        "--account", type=int, required=True,
+        help="Account ID to operate against (required — no env fallback).",
     )
     return parent
 
@@ -264,6 +295,20 @@ def main() -> None:
         help="Stream the review live to stdout (useful with --model opus due to latency)",
     )
     co.set_defaults(func=cmd_coach)
+
+    ch = sub.add_parser(
+        "chat",
+        help="Ask the Stanley-Parable narrator a question about an analyzed match",
+        parents=[acct],
+    )
+    ch.add_argument("match_id", type=int)
+    ch.add_argument("message", type=str, help="The question to ask")
+    ch.add_argument("--model", default="haiku", choices=["haiku", "sonnet", "opus"])
+    ch.add_argument("--no-persist", action="store_true",
+                    help="Don't append this exchange to data/chats/<aid>/<mid>.jsonl")
+    ch.add_argument("-v", "--verbose", action="store_true",
+                    help="Also print tool calls, token usage, and cost")
+    ch.set_defaults(func=cmd_chat)
 
     args = p.parse_args()
     args.func(args)

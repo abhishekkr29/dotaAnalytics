@@ -7,7 +7,6 @@ from tqdm import tqdm
 
 from app import config, db
 
-
 _RETRYABLE_STATUSES = {429, 500, 502, 503, 504, 520, 521, 522, 524}
 
 _API_KEY_RE = re.compile(r'([?&])api_key=[^&\s]*')
@@ -31,6 +30,19 @@ def _params_with_api_key(params: dict | None) -> dict:
     return out
 
 
+def _raise_for_status_safely(resp: requests.Response) -> None:
+    """Like resp.raise_for_status() but masks ?api_key=… in the error message.
+
+    Without this, every retryable failure (and any 4xx that escapes the retry
+    loop) emits a traceback containing the full request URL — which on a
+    Premium-key deployment includes the operator's OpenDota API key.
+    """
+    try:
+        resp.raise_for_status()
+    except requests.HTTPError as e:
+        raise requests.HTTPError(_safe_error(e), response=e.response) from None
+
+
 def _get(path: str, params: dict | None = None) -> dict | list:
     url = f"{config.OPENDOTA_BASE}{path}"
     merged = _params_with_api_key(params)
@@ -44,11 +56,11 @@ def _get(path: str, params: dict | None = None) -> dict | list:
         if last_resp.status_code in _RETRYABLE_STATUSES:
             time.sleep(2 ** attempt)
             continue
-        last_resp.raise_for_status()
+        _raise_for_status_safely(last_resp)
         return last_resp.json()
     if last_resp is None:
         raise RuntimeError(f"network failure on {url}")
-    last_resp.raise_for_status()
+    _raise_for_status_safely(last_resp)
 
 
 def _post(path: str) -> None:
@@ -65,11 +77,11 @@ def _post(path: str) -> None:
         if last_resp.status_code in _RETRYABLE_STATUSES:
             time.sleep(2 ** attempt)
             continue
-        last_resp.raise_for_status()
+        _raise_for_status_safely(last_resp)
         return
     if last_resp is None:
         raise RuntimeError(f"network failure on POST {url}")
-    last_resp.raise_for_status()
+    _raise_for_status_safely(last_resp)
 
 
 def _explorer(sql: str) -> list[dict]:

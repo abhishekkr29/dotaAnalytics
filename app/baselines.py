@@ -33,7 +33,6 @@ from tqdm import tqdm
 from app import config, fetcher
 from app.analyze import KEY_ITEMS
 
-
 _NOISE_FLOOR = 5  # need at least N samples to publish a median
 
 

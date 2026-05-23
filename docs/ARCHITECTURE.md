@@ -52,18 +52,19 @@ Four services (db / app / auth / web), one shared volume, three external depende
 
 | Module | Purpose |
 |---|---|
-| `app/config.py` | Reads env (`ACCOUNT_ID`, DB URL, JWT/Fernet secrets, OpenID URLs, cost cap). Per-user path helpers. `resolve_account_id(explicit)`. |
+| `app/config.py` | Reads env (DB URL, JWT/Fernet secrets, OpenID URLs, cost cap, Anthropic + OpenDota keys). Per-user path helpers. `resolve_account_id(explicit)` requires an explicit id — there is no env-var fallback. |
 | `app/db.py` | Postgres helper + idempotent `ensure_schema()` for all four tables. |
 | `app/fetcher.py` | OpenDota HTTP client with 429/5xx retry. All public functions take explicit `account_id`. `upsert_match` populates `user_matches` when given an account. |
 | `app/snapshots.py` | Pure transform: parsed match JSON → per-minute snapshot dicts. |
 | `app/train.py` | Group-aware train/val split, fits XGBoost. One model shared across users (rank-conditioned). Post-fit: per-bracket isotonic calibration (`data/calibrators.joblib`). Tracks `parsed_match_count_at_train` in `model_meta.json` so the auto-retrain hint can compute deltas. |
 | `app/analyze.py` | `analyze(match_id, account_id, …)` — win-prob curve + scored decisions. Decision clustering for same-fight deaths. Buyback events. Replay deep links. Trims feature list to `model.n_features_in_` for forward-compat. Applies per-bracket calibration when present. **Causal-attribution filter** drops semantic impossibilities (death with positive Δwp, kill with negative Δwp) and demotes action events (items/wards/smokes/buybacks) that fall within 90s of an outcome event (death/kill) — they're co-events, not causes. |
 | `app/coach.py` | Three Claude-backed surfaces: **`coach()`** (full markdown review, streaming, cached at `data/reviews/<aid>/<mid>.md`), **`recommend_per_leak()`** (Haiku, 1-2 sentence tactical advice per leak using only pre-leak causal context; cached at `data/recommendations/<aid>/<mid>.json`), **`assign_blame()`** (Stanley Parable narrator picks one player on the losing team via role-aware composite blame score, 30-50 word zinger; cached at `data/blame/<aid>/<mid>__<slot>.json`). All three gated by `cost.check_budget` → `cost.charge`. Resolve BYO vs server key. |
+| `app/chat.py` | **`chat()`** — agentic multi-turn chat about an analyzed match in Stanley Parable narrator voice. Uses Anthropic tool use; the model picks from 7 tools (current-match: `get_decision_timeline`, `get_player_deaths`, `get_item_timings`, `get_team_stats`; cross-match: `get_recurring_patterns`, `get_recent_matches`, `get_hero_history`) to pull data on demand. Hard cap of 6 tool roundtrips per user message. Persisted as JSONL at `data/chats/<aid>/<mid>.jsonl`; same cost gating + BYO key as `coach.py`. Default model: Haiku. |
 | `app/baselines.py` | Builds and reads per-(rank_bucket, hero, item) median purchase-time table. `data/baselines.json`. Powers the coach's "BKB at 17:30 vs bracket median 14:00" advice. |
 | `app/cost.py` | Daily/monthly per-user spend tracking; `BudgetExceeded` when over cap on the server key. |
 | `app/crypto.py` | Fernet encryption helpers for BYO Anthropic keys at rest. |
 | `app/auth.py` | FastAPI on `:8502`. Steam OpenID 2.0 sign-in → mints JWT → 302s to web. |
-| `app/web.py` | Streamlit entry / home page. Handles `?token=` handoff, dev-env fallback. |
+| `app/web.py` | Streamlit entry / home page. Handles `?token=` handoff. Shows Steam sign-in prompt when no session. |
 | `app/web_auth.py` | Streamlit-side `current_user()`, `require_login()`, and the shared sidebar (cost dashboard + model picker + sign-out). |
 | `app/pages/*.py` | Analyzer · History · Patterns · Reviews · Settings. Each page calls `require_login()`. |
 | `app/cli.py` | argparse with `--account` parent. Calls `db.ensure_schema()` on startup. |

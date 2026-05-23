@@ -3,7 +3,9 @@
 Sets safe defaults so module-level env reads (`app.config`) don't fail in CI:
 - FERNET_KEY / JWT_SECRET to deterministic test values
 - DATA_DIR to a temporary directory unique to this test run
-- ACCOUNT_ID unset so `require_account_id()` checks can be exercised
+- ACCOUNT_ID unset (defensive — the runtime no longer reads it, but pre-existing
+  shells may have it exported, which would skew tests that exercise account-id
+  resolution code paths).
 """
 
 import os

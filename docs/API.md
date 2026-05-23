@@ -8,7 +8,7 @@ docker compose run --rm app python -m app.cli <subcommand> [args]
 
 Schema bootstrap runs on every invocation — no separate init step.
 
-**Account resolution.** Subcommands that operate on a user accept `--account <id>`. If omitted, they fall back to `$ACCOUNT_ID` from `.env` (this preserves the original single-user workflow). The web UI sets the account via Steam sign-in.
+**Account resolution.** Every subcommand that operates on a user **requires** `--account <id>`. There is no env-var fallback — argparse rejects calls that omit it. The web UI sets the account from the Steam-signed JWT.
 
 ## CLI subcommands
 
@@ -25,13 +25,13 @@ Print the resolved account id. Sanity-check env / flag wiring.
 Fetch and cache a user's OpenDota profile. Caches to `data/profiles/<account_id>.json`.
 
 **Args:**
-- `--account ID` — account to fetch for. Defaults to `$ACCOUNT_ID`.
+- `--account ID` — account to fetch for. **Required.**
 - `--refresh` — bypass disk cache.
 
 **Output (JSON):**
 ```json
 {
-  "account_id": 446619601,
+  "account_id": 123456789,
   "personaname": "ak3zio",
   "rank_tier": 43,
   "computed_mmr_turbo": 3848.29
@@ -159,7 +159,7 @@ Full inference pipeline for one match. Requires: trained model, match is Turbo +
 ```json
 {
   "match_id": 8810000000,
-  "account_id": 446619601,
+  "account_id": 123456789,
   "you": {"hero": "Storm Spirit", "slot": 3, "team": "radiant", "kda": "9/4/12", "result": "loss"},
   "duration_min": 22,
   "win_prob_curve": [0.500, 0.512, 0.498],
@@ -182,9 +182,9 @@ Generate a markdown coach review via Claude. Writes to `data/reviews/<account_id
 ```json
 {
   "match_id": 8810000000,
-  "account_id": 446619601,
+  "account_id": 123456789,
   "model": "claude-sonnet-4-6",
-  "review_path": "/code/data/reviews/446619601/8810000000.md",
+  "review_path": "/code/data/reviews/123456789/8810000000.md",
   "memory_entries": 3,
   "byo_key": false,
   "cost_cents": 4,
@@ -195,6 +195,16 @@ Generate a markdown coach review via Claude. Writes to `data/reviews/<account_id
 `--stream` prints chunks to stdout as Claude generates them (useful on Opus); the JSON receipt still prints at the end.
 
 **Errors:** all of `analyze`'s errors; `cost.BudgetExceeded` if the daily cap is hit on the server key; auth/rate-limit/API errors from Anthropic.
+
+---
+
+### `chat [--account ID] <match_id> "<message>" [--model {haiku,sonnet,opus}] [--no-persist] [-v]`
+
+Send one message to the Stanley-Parable-narrator chat agent for an analyzed match. Prints the assistant reply to stdout; with `-v`, also dumps `{model, cost_cents, tool_calls, usage, tool_cap_hit}` as a JSON appendix.
+
+The agent has 7 tools and may chain up to **6 tool calls per message** before producing a final reply (the cap prevents runaway loops). Persisted as one user/assistant pair per turn appended to `data/chats/<account_id>/<match_id>.jsonl`. `--no-persist` skips writing to disk.
+
+**Errors:** `analyze`'s errors (match must be parsed); `cost.BudgetExceeded`; Anthropic auth/rate-limit/API errors.
 
 ---
 
@@ -243,7 +253,7 @@ JWTs are HMAC-SHA256 signed with `JWT_SECRET`. Payload: `{"account_id": int, "ex
 
 | Function | Purpose |
 |---|---|
-| `analyze(match_id, account_id=None, top_k=5, min_impact=0.005) -> dict` | Inference pipeline. `account_id` falls back to `$ACCOUNT_ID`. |
+| `analyze(match_id, account_id, top_k=5, min_impact=0.005) -> dict` | Inference pipeline. `account_id` is required (raises `SystemExit` if `None`). |
 | `heroes_by_id() -> dict[int, dict]` | Cached `/heroes` lookup |
 | `KEY_ITEMS` | `{npc_item_key: display_name}` |
 
@@ -276,6 +286,19 @@ Interactive prompt phrase differs per mode (`wipe` vs `wipe everything`) so musc
 | `_pick_blame_target(match, losing_team_radiant, exclude_account)` | Internal. Returns `(player, role, factors)`. Role inferred from GPM rank within team; composite score = weighted sum of role-normalized deviations on deaths / gpm / hero_damage / tower_damage. |
 | `MODEL_ALIASES` | `{haiku,sonnet,opus}` → exact Claude model id |
 | `SYSTEM_PROMPT` / `PER_LEAK_SYSTEM_PROMPT` / `BLAME_SYSTEM_PROMPT` | The three system prompts |
+
+### `app.chat`
+
+| Function | Purpose |
+|---|---|
+| `chat(match_id, account_id, user_message, model="haiku", persist=True) -> dict` | Convenience wrapper: loads on-disk history → `chat_turn()` → appends result to JSONL. Returns `{assistant, tool_calls, cost_cents, usage, model, tool_cap_hit}`. |
+| `chat_turn(match_id, account_id, user_message, history=None, model="haiku") -> dict` | One tool-use loop; raises `SystemExit` on Anthropic errors, `BudgetExceeded` if capped. Hard-stops at `CHAT_MAX_TOOL_TURNS` roundtrips. |
+| `load_history(account_id, match_id) -> list[dict]` | Read persisted turns from `data/chats/<aid>/<mid>.jsonl`. |
+| `append_history(account_id, match_id, user_text, assistant_text, cost_cents, tool_calls)` | Append one (user, assistant) pair. |
+| `clear_history(account_id, match_id)` | Remove the JSONL file. |
+| `TOOLS` | The 7-tool JSON-schema list sent to Claude. |
+| `TOOL_DISPATCH` | `{tool_name: callable}` — each takes `(ctx, **kwargs)`. |
+| `CHAT_SYSTEM_PROMPT` | Stanley-Parable-narrator system prompt for chat. |
 
 ### `app.baselines`
 
@@ -322,17 +345,15 @@ Interactive prompt phrase differs per mode (`wipe` vs `wipe everything`) so musc
 
 | Symbol | Purpose |
 |---|---|
-| `ACCOUNT_ID` | `int \| None` — single-user CLI fallback |
 | `DATABASE_URL`, `DATA_DIR`, `MATCHES_DIR`, `MODEL_PATH` | paths / connection |
-| `PROFILES_DIR`, `MEMORY_DIR`, `REVIEWS_DIR` | per-user roots |
-| `profile_path(aid)`, `memory_path(aid)`, `reviews_dir_for(aid)` | per-user path helpers |
+| `PROFILES_DIR`, `MEMORY_DIR`, `REVIEWS_DIR`, `RECOMMENDATIONS_DIR`, `BLAME_DIR`, `CHATS_DIR` | per-user roots |
+| `profile_path(aid)`, `memory_path(aid)`, `reviews_dir_for(aid)`, `recommendations_dir_for(aid)`, `blame_dir_for(aid)`, `chats_dir_for(aid)` | per-user path helpers |
 | `JWT_SECRET`, `FERNET_KEY` | auth + crypto |
 | `DAILY_COST_CAP_CENTS` | server-key cap (default 25¢/day) |
 | `STEAM_OPENID_REALM`, `AUTH_PUBLIC_URL`, `WEB_PUBLIC_URL` | Steam OpenID + redirects |
 | `ANTHROPIC_API_KEY` | server-side default key |
 | `OPENDOTA_API_KEY` | Premium tier key; auto-injected as `?api_key=…` on every OpenDota call when set. Empty → free tier. |
-| `resolve_account_id(explicit=None) -> int` | flag-or-env resolver used by CLI + module APIs |
-| `require_account_id() -> int` | back-compat alias for the env-only resolver |
+| `resolve_account_id(explicit) -> int` | Returns `int(explicit)`; raises `SystemExit` if `None`. No env fallback. |
 
 ## OpenDota endpoints used
 

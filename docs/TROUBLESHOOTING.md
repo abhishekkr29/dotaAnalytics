@@ -79,7 +79,7 @@ auth.verify_jwt("<paste>")  # → None means rejection
 
 **Cause:** Steam's verification call goes from Steam's servers to your auth service. Steam can't reach `localhost:8502` from the public internet.
 
-**Fix:** For local end-to-end Steam testing, use ngrok or a similar tunnel and set `AUTH_PUBLIC_URL` + `STEAM_OPENID_REALM` to the tunnel URL. **OR** use the dev-env fallback: with `ACCOUNT_ID` set in `.env` the web app auto-logs you in without going through Steam.
+**Fix:** For local end-to-end Steam testing, use ngrok or a similar tunnel and set `AUTH_PUBLIC_URL` + `STEAM_OPENID_REALM` to the tunnel URL. There is no longer a dev-env auto-login fallback — sign-in is always required for the web UI.
 
 ## Anthropic / Coach
 

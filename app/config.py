@@ -1,7 +1,6 @@
 import os
 from pathlib import Path
 
-ACCOUNT_ID = int(os.environ["ACCOUNT_ID"]) if os.getenv("ACCOUNT_ID") else None
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://dota:dota@localhost:5432/dota")
 
 OPENDOTA_BASE = "https://api.opendota.com/api"
@@ -38,18 +37,17 @@ AUTH_PUBLIC_URL = os.getenv("AUTH_PUBLIC_URL", "http://localhost:8502")
 WEB_PUBLIC_URL = os.getenv("WEB_PUBLIC_URL", "http://localhost:8501")
 
 
-def require_account_id() -> int:
-    """Resolve an account id from ACCOUNT_ID env. Used by single-user CLI flow."""
-    if not ACCOUNT_ID:
-        raise SystemExit("ACCOUNT_ID is not set — pass --account <id> or add it to .env")
-    return ACCOUNT_ID
-
-
 def resolve_account_id(explicit: int | None = None) -> int:
-    """Prefer an explicit account id (CLI flag, web session); fall back to env."""
-    if explicit is not None:
-        return int(explicit)
-    return require_account_id()
+    """Require an explicit account id (CLI `--account` or web session).
+
+    There is no env-var fallback — every public entrypoint must thread an account
+    id through explicitly.
+    """
+    if explicit is None:
+        raise SystemExit(
+            "account id is required — pass --account <id> on the CLI, or sign in via Steam in the web UI"
+        )
+    return int(explicit)
 
 
 def profile_path(account_id: int) -> Path:
@@ -82,5 +80,15 @@ BLAME_DIR.mkdir(parents=True, exist_ok=True)
 
 def blame_dir_for(account_id: int) -> Path:
     p = BLAME_DIR / str(account_id)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+CHATS_DIR = DATA_DIR / "chats"
+CHATS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def chats_dir_for(account_id: int) -> Path:
+    p = CHATS_DIR / str(account_id)
     p.mkdir(parents=True, exist_ok=True)
     return p
