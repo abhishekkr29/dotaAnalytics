@@ -44,10 +44,13 @@ JWTs are 7 days. There's no refresh, no revocation list. Closing the browser tab
 
 ## Cost gating
 
-- Each successful coach call is converted to cents via `app.cost.estimate_cents` using the model's per-token pricing.
+The same `app.cost` gate wraps every Anthropic-backed surface — full coach review (`coach.coach`), per-leak recommendations (`coach.recommend_per_leak`), narrator blame (`coach.assign_blame`), and agentic chat per message (`chat.chat`). All four follow the same shape:
+
+- Each successful call is converted to cents via `app.cost.estimate_cents` using the model's per-token pricing.
 - Server-key calls increment `users.daily_cost_used_cents` (reset at UTC midnight) and `users.monthly_cost_used_cents`.
-- `cost.check_budget` is called *before* each coach run; it raises `BudgetExceeded` when the daily counter ≥ cap.
+- `cost.check_budget` is called *before* each call; raises `BudgetExceeded` when the daily counter ≥ cap.
 - BYO calls skip the cap check and only increment the monthly counter (for the user's own stats).
+- For `chat`, the cap is checked **once per user message** (before the loop starts), but a single turn can issue up to `CHAT_MAX_TOOL_TURNS = 6` Anthropic `messages.create` round-trips (each tool result is sent back as a new request). Token usage is summed across all round-trips; `cost.charge` fires once at the end with the aggregated cents. Practical consequence: a chat turn that hits the tool cap costs ~6× a one-shot turn, but the gate only stops a *new* user message — not a runaway loop mid-turn. The hard cap (`CHAT_MAX_TOOL_TURNS`) is the bound on per-turn cost.
 
 This gate prevents one user from burning the operator's entire Anthropic budget. It is not a billing system; if you accept money you need real metering.
 

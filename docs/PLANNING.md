@@ -27,31 +27,40 @@ A personal-scope Dota 2 Turbo decision analyzer that:
 
 Tier 1's hybrid lets us ship something explainable and cheap that captures most of the signal of pure ML.
 
-## Current capabilities (as of 2026-05-15)
+## Current capabilities (as of 2026-05-25)
 
-End-to-end validated on real user matches. The CLI surface (`docker compose run --rm app python -m app.cli …`):
+End-to-end validated on real user matches; open-sourced under MIT 2026-05-25. The CLI surface (`docker compose run --rm app python -m app.cli …`):
 
 | Command | What it does |
 |---|---|
-| `account` | Sanity-check env wiring |
-| `profile [--refresh]` | Fetch + cache your OpenDota profile + rank tier |
-| `bracket-fetch --limit N --window W` | Discover bracket Turbo matches via single `/explorer` JOIN; fetch JSONs only for matches already parsed |
-| `match-fetch <match_id>` | Fetch any single match, cache + upsert |
-| `request-parses --limit N` | Queue parse requests with 24h cooldown to avoid duplicates |
-| `refresh-parses --limit N` | Per-match `/matches/{id}` re-fetch (reliable; `/explorer`-based status lookup turned out to be unreliable) with 429/5xx retry |
+| `account --account ID` | Sanity-check account-id resolution (no env fallback — required flag) |
+| `profile --account ID [--refresh]` | Fetch + cache that user's OpenDota profile + rank tier |
+| `bracket-fetch --account ID [--rank N] --limit N --window W` | Discover bracket Turbo matches via single `/explorer` JOIN; fetch JSONs only for matches already parsed |
+| `match-fetch --account ID <match_id>` | Fetch any single match, cache + upsert |
+| `request-parses --limit N [--rank-min N --rank-max N]` | Queue parse requests with 24h cooldown; rank-window filter for targeted bracket bootstrap |
+| `refresh-parses --account ID --limit N` | Per-match `/matches/{id}` re-fetch (reliable; `/explorer`-based status lookup turned out to be unreliable) with 429/5xx retry |
 | `snapshots [--rebuild]` | Extract per-minute training rows from cached JSONs |
-| `train [--n-estimators N]` | Fit XGBoost win-prob model. Auto-updates `docs/TRAINING.md` history. |
+| `train [--n-estimators N]` | Fit XGBoost win-prob model + per-bracket isotonic calibration. Auto-updates `docs/TRAINING.md` history. |
 | `refresh-doc` | Manually re-sync `docs/TRAINING.md` from `data/model_meta.json` (no retrain) |
-| `analyze <match_id>` | Ranked decisions + win-prob curve JSON. 7 decision types: item, death, kill, roshan, smoke, ward_obs, ward_sen |
-| `coach <match_id> [--model {haiku,sonnet,opus}]` | Markdown coach review via Claude. Auto-includes farm snapshots, item-build prescription, counterfactuals, cross-match memory |
+| `training-status` | Print parsed-match delta since the last `train` — hints when retraining is worth it (≥500 new matches) |
+| `build-baselines` | Compute per-(rank, hero, item) median purchase-time table → `data/baselines.json` |
+| `sweep [--out PATH]` | XGBoost hyperparam grid sweep (`max_depth × lr × n_estimators`); prints metrics, doesn't save the model |
+| `analyze --account ID <match_id>` | Ranked decisions + win-prob curve JSON. 7 decision types: item, death, kill, roshan, smoke, ward_obs, ward_sen; buyback events + replay deep links |
+| `coach --account ID <match_id> [--model {haiku,sonnet,opus}] [--stream]` | Markdown coach review via Claude. Farm snapshots, item-build prescription, counterfactuals, cross-match memory. Streaming optional. |
+| `chat --account ID <match_id> "<question>" [--model …] [--no-persist] [-v]` | One agentic chat turn in Stanley-Parable narrator voice. 7 tools (current-match + cross-match); ≤6 tool roundtrips per turn; JSONL history per (account, match) |
 
 **What the system delivers:**
 
-- A trained, bracket-conditioned XGBoost win-probability model (`val_auc 0.854` on 997 matches; 19 features incl. 10 hero IDs).
-- Per-match analyze output: full per-minute win-prob curve + ranked decisions scored by Δ win-prob.
-- Per-match coach review: ~700-word markdown with phase-by-phase narrative, item-build counters, farm-pattern critique, timing-window counterfactuals, three actionable takeaways. Spots recurring patterns across reviewed matches via `data/coach_memory.json`.
+- A trained, bracket-conditioned XGBoost win-probability model with per-bracket isotonic calibration (current: `val_auc 0.7987` / `val_auc_calibrated 0.8025` on 15,250 matches; 19 features incl. 10 hero IDs).
+- Per-match analyze output: full per-minute win-prob curve + ranked decisions scored by Δ win-prob; decision clustering for same-fight deaths; causal filter; replay deep links.
+- Per-match coach review: ~700-word markdown with phase-by-phase narrative, item-build counters, farm-pattern critique, timing-window counterfactuals, three actionable takeaways. Spots recurring patterns across reviewed matches via per-account `coach_memory/<aid>.json`.
+- Per-leak recommendations (Haiku, ~$0.005/match): 1–2 sentence concrete tactical advice per leak using only causal pre-leak context (`[t-120s, t]`).
+- Stanley-Parable narrator blame (Haiku, ~$0.001/match): role-aware composite scorer picks the worst player on the losing team; 30–50 word zinger.
+- Stanley-Parable narrator chat (Haiku, ~$0.005/msg): agentic Q&A with 7 tools (current-match: decision timeline, deaths, item timings, team stats; cross-match: recurring patterns, recent matches, hero history); hard cap of 6 tool roundtrips per turn; JSONL history.
+- Multi-user via Steam OpenID sign-in. Per-account memory, BYO Anthropic key with Fernet encryption-at-rest, daily cost cap for the server key.
 - Idempotent + resumable pipeline. Failure recovery costs ~0 API calls.
-- Smoke test (`scripts/smoke.sh`) — 13 checks, runs in ~30 s.
+- Smoke test (`scripts/smoke.sh`) — 29 checks, runs in ~30 s.
+- pytest suite (`tests/`) — 67 cases across 9 files (analyze, auth, baselines, blame, chat, cost, crypto, recommend, snapshots).
 
 ## Phase plan
 
@@ -68,6 +77,8 @@ End-to-end validated on real user matches. The CLI surface (`docker compose run 
 | **5d. Coach improvements** | **done 2026-05-17** | Per-hero memory retrieval (separate prompt section for current-hero history) · per-matchup memory (cross-match recurring-enemy flags) · patch tagging on memory entries with auto-decay across patches · streaming output via `messages.stream()` (CLI `--stream` flag + Streamlit live-update). Skipped for now: semantic embeddings, pruning-by-relevance. |
 | **5e. Model improvements** | **done 2026-05-17** | Per-bracket isotonic calibration (`data/calibrators.joblib`, fitted post-train on val-fold predictions per rank bucket, skip <50 samples) · backward-compat in `analyze._load_model` (trims `FEATURE_COLS` to `n_features_in_`) · auto-retrain hint via `training-status` CLI + emitted by `refresh-parses` when ≥500 new parsed since last train · hyperparam `sweep` script over `max_depth × lr × n_estimators`. Background data accumulation continues via `scripts/collect_data.sh`. New snapshot features deferred (would require `snapshots --rebuild`). |
 | **5f. Validation + ops** | **done 2026-05-17** | pytest skeleton (30 tests across crypto / cost / auth / analyze / baselines / snapshots) · `docs/TROUBLESHOOTING.md` covering OpenDota / DB / Steam OpenID / Anthropic / model / Streamlit / smoke / migration warts · smoke test extended to 24 checks. |
+| **5g. Narrator surfaces (per-leak recs + blame + agentic chat)** | **done 2026-05-22** | Three new Claude-backed surfaces in `app/coach.py` + new `app/chat.py`. **Per-leak recommendations** (`recommend_per_leak`, Haiku, ~$0.005/match): 1–2 sentence concrete tactical advice per leak built from causal pre-leak context `[t-120s, t]` (regression-tested against post-leak hallucinations). Cached at `data/recommendations/<aid>/<mid>.json`. **Stanley-Parable narrator blame** (`assign_blame`, Haiku, ~$0.001/match): role-aware composite blame score (death/gpm/hero_dmg/tower_dmg z vs role baselines) picks the worst player on the losing team; 30–50 word zinger with strict voice constraints (no slurs, rate-limited self-references). Cached at `data/blame/<aid>/<mid>__<slot>.json`. **Agentic chat** (`app.chat.chat`, Haiku, ~$0.005/msg): multi-turn tool-use loop with 7 tools (4 current-match: `get_decision_timeline`/`get_player_deaths`/`get_item_timings`/`get_team_stats`; 3 cross-match: `get_recurring_patterns`/`get_recent_matches`/`get_hero_history`); hard cap of `CHAT_MAX_TOOL_TURNS = 6` roundtrips per turn; last `CHAT_HISTORY_TURNS = 10` pairs replayed; JSONL history at `data/chats/<aid>/<mid>.jsonl`; CLI `chat` subcommand + Analyzer-page expander UI. Smoke test bumped to 29 checks. pytest suite bumped to 67 cases (added test_blame, test_chat, test_recommend). |
+| **6. Open-source release** | **done 2026-05-25** | LICENSE (MIT) · `CONTRIBUTING.md` (setup/test/style/security disclosure) · `CODE_OF_CONDUCT.md` (Contributor Covenant v2.1) · root `SECURITY.md` (vuln reporting) · `.github/workflows/test.yml` (ruff + pytest on push/PR) · issue + PR templates · `.editorconfig` · `pyproject.toml` (ruff config E/F/W/I, ignore E501/E731) · `examples/demo/` bundle (~1.9 MB: trained model + calibrators + baselines + heroes + meta) with `install_demo.sh` to seed `data/` and `sample_match_ids.txt` instructions · README badges + public-facing intro + demo section · removed dev-env account-id fallback end-to-end (web, CLI, .env, docs) · persona-name display across UI (lazy fetch + session cache) · OpenDota api_key sanitizer in fetcher tracebacks · removed orphan scripts (`build_combined_pdf.py`, `parallel_harvest.py`). |
 
 ## Validation plan — **done**
 
@@ -119,8 +130,10 @@ Phase 4 (UI) remains deferred — CLI is sufficient and the validation effort co
 | 5d. Coach (per-hero/matchup memory, streaming, patch tagging) | ~7 h | done 2026-05-17 |
 | 5e. Model (per-bracket calibration, retrain trigger, sweep, backward-compat) | ~6 h | done 2026-05-17 |
 | 5f. Validation + ops (pytest, TROUBLESHOOTING.md) | ~5 h | done 2026-05-17 |
+| 5g. Narrator surfaces (per-leak recs, Stanley-Parable blame, agentic chat) | ~14 h | done 2026-05-22 |
+| 6. Open-source release (LICENSE, CONTRIBUTING, CoC, CI, demo bundle, templates) | ~5 h | done 2026-05-25 |
 
-Active dev time so far: ~99 h.
+Active dev time so far: ~118 h.
 
 ## OpenDota rate-limit considerations
 
@@ -202,6 +215,9 @@ Grouped by area. Effort rough: **S** ≤2h, **M** ~half-day, **L** day+, **XL** 
 | Memory pruning by relevance | M | Keep entries that contributed to surfaced patterns longer than one-off games |
 | ~~Replay-clip timestamps~~ | — | **Done in 5c.3** — each decision now has a `replay_url` (`dota2://matchid=…&matchtime=…`). |
 | Coach-driven retraining hint | M | If coach commentary repeatedly cites "model didn't capture X", surface a "consider retraining" recommendation |
+| ~~Per-leak tactical recommendations~~ | — | **Done in 5g** — `recommend_per_leak()` produces 1–2 sentence concrete advice per leak using only `[t-120s, t]` causal context. Cached at `data/recommendations/<aid>/<mid>.json`. Inlined under each leak card in the Analyzer page. |
+| ~~Stanley-Parable narrator blame~~ | — | **Done in 5g** — `assign_blame()` uses role-aware composite score to pick the worst player on the losing team for a 30–50 word zinger. Cached at `data/blame/<aid>/<mid>__<slot>.json`. |
+| ~~Agentic chat about a match~~ | — | **Done in 5g** — `app.chat.chat()` is a multi-turn tool-use loop with 7 tools (4 current-match + 3 cross-match); ≤6 tool roundtrips per turn; JSONL persistence at `data/chats/<aid>/<mid>.jsonl`. CLI `chat` subcommand + Analyzer-page expander UI. |
 
 ### UI additions (Phase 4 MVP done — these are future enhancements)
 
@@ -245,4 +261,3 @@ Steam Web API **is** worth adding as a **supplement** (logged as `Steam Web API 
 | Continuous deployment | Personal CLI tool — no service to deploy |
 | Telemetry / user analytics | Single-user; nothing to collect |
 | **Replacing OpenDota with self-parsed replays** | OpenDota does the .dem parsing for free. Self-parsing means JVM/Go runtime + 150 GB raw replays + ~16 h CPU per 1000 matches. Net-zero win — would just be rebuilding OpenDota inside the app. |
-- **Prompt-cache breakpoint past Sonnet 4.6's 2048-token minimum.** Once the system prompt grows (more rules, more style guidance, examples), caching will start activating; verify `usage.cache_read_input_tokens > 0` after the next prompt expansion.

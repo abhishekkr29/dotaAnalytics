@@ -23,13 +23,18 @@
 │                            ▼                                           │
 │   ┌──────────────────────────────────────────────────────────┐         │
 │   │  ./data                                                  │         │
-│   │  · matches/<match_id>.json    raw match JSON cache       │         │
-│   │  · profiles/<account_id>.json per-user profile cache     │         │
-│   │  · coach_memory/<aid>.json    per-user coach memory      │         │
-│   │  · reviews/<aid>/<mid>.md     per-user markdown reviews  │         │
-│   │  · heroes.json                hero metadata              │         │
-│   │  · turbo_winprob.json         shared model               │         │
-│   │  · model_meta.json            training metrics           │         │
+│   │  · matches/<match_id>.json       raw match JSON cache    │         │
+│   │  · profiles/<account_id>.json    per-user profile cache  │         │
+│   │  · coach_memory/<aid>.json       per-user coach memory   │         │
+│   │  · reviews/<aid>/<mid>.md        per-user markdown review│         │
+│   │  · recommendations/<aid>/<mid>.json  per-leak recs cache │         │
+│   │  · blame/<aid>/<mid>__<slot>.json    blame zinger cache  │         │
+│   │  · chats/<aid>/<mid>.jsonl       per-(user,match) chat   │         │
+│   │  · heroes.json                   hero metadata           │         │
+│   │  · turbo_winprob.json            shared model            │         │
+│   │  · calibrators.joblib            per-bracket isotonic    │         │
+│   │  · baselines.json                (rank,hero,item) median │         │
+│   │  · model_meta.json               training metrics        │         │
 │   └──────────────────────────────────────────────────────────┘         │
 └────────────────────────────────────────────────────────────────────────┘
        │                              │
@@ -229,6 +234,11 @@ Indexes: `avg_rank_tier`. FK `match_id → matches(match_id)` with `ON DELETE CA
 - **Training metrics** → `data/model_meta.json`.
 - **Coach reviews** → `data/reviews/{account_id}/{match_id}.md` (per-user).
 - **Coach session memory** → `data/coach_memory/{account_id}.json` (per-user; last 20 reviewed matches, last 5 injected into the next prompt).
+- **Per-leak recommendations** → `data/recommendations/{account_id}/{match_id}.json` (per-user; one JSON per match keyed by leak index).
+- **Blame zingers** → `data/blame/{account_id}/{match_id}__{slot}.json` (per-user × per-blamed-slot; lets the user re-blame a different target without overwriting).
+- **Chat history** → `data/chats/{account_id}/{match_id}.jsonl` (per-user × per-match; one JSON line per turn-side, tool calls + cost cents stored alongside content).
+- **Per-bracket calibrators** → `data/calibrators.joblib` (one isotonic regression per rank bucket with ≥50 val samples; applied post-`predict_proba`).
+- **Counterfactual baselines** → `data/baselines.json` (per-`(rank_bucket, hero_id, item_key)` median purchase-time; ≥5 sample noise floor).
 
 
 The DB stores summary rows; disk cache stores full JSON. Snapshots can always be rebuilt from the disk cache.

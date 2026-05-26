@@ -175,18 +175,21 @@ WEB_PUBLIC_URL=http://localhost:8501
 │   ├── API.md
 │   └── SECURITY.md
 ├── scripts/
-│   ├── smoke.sh             # end-to-end smoke test
+│   ├── smoke.sh             # end-to-end smoke test (29 checks)
 │   ├── collect_data.sh      # Phase 1-3: discover + parse + refresh across 7 brackets
 │   ├── train_model.sh       # Phase 4: snapshots + train + baselines
-│   ├── wipe_data.py         # destructive: wipe training data (--full = factory reset)
+│   ├── wipe_data.py         # destructive: user/history wipe (default) / --include-matches = factory reset
 │   └── sweep.py             # one-shot XGBoost hyperparam sweep
-├── tests/                          # pytest suite (30 cases)
+├── tests/                          # pytest suite (67 cases across 9 files)
 │   ├── conftest.py                 # synthetic match fixture + env defaults
 │   ├── test_analyze.py             # decision extraction + clustering
 │   ├── test_auth.py                # JWT mint/verify
 │   ├── test_baselines.py           # rank bucket + format_delta
+│   ├── test_blame.py               # role-aware blame picker + composite score
+│   ├── test_chat.py                # agentic chat tool dispatch + JSONL persistence
 │   ├── test_cost.py                # estimate_cents math
 │   ├── test_crypto.py              # Fernet roundtrip
+│   ├── test_recommend.py           # per-leak causal-context builder
 │   └── test_snapshots.py           # per-minute extraction
 └── app/
     ├── config.py          # env-driven config, per-user path helpers, account resolver
@@ -195,7 +198,8 @@ WEB_PUBLIC_URL=http://localhost:8501
     ├── snapshots.py       # per-minute feature extraction
     ├── train.py           # XGBoost trainer (shared model) + per-bracket isotonic calibration
     ├── analyze.py         # win-prob curve + decision scorer + clustering + replay links
-    ├── coach.py           # heuristic beats + Claude → markdown review (streaming + BYO key)
+    ├── coach.py           # heuristic beats + Claude → markdown review + per-leak recs + Stanley-Parable blame
+    ├── chat.py            # agentic chat (Stanley Parable narrator) — 7 tools, JSONL history
     ├── baselines.py       # per-(rank, hero, item) median purchase-time table
     ├── cost.py            # per-user daily/monthly Anthropic spend tracking
     ├── crypto.py          # Fernet encryption for BYO API keys
@@ -220,7 +224,7 @@ $0 — runs locally. OpenDota free tier (~2,000 calls/day) is sufficient for per
 | Phase | Status |
 |---|---|
 | 1. Ingest | done |
-| 2. Training pipeline | **done** — `val_auc 0.854` on 997 matches ([docs/TRAINING.md](docs/TRAINING.md) for live metrics) |
+| 2. Training pipeline | **done** — current model `val_auc 0.80` on 15,250 matches ([docs/TRAINING.md](docs/TRAINING.md) for live metrics) |
 | 3. Decision scorer | **done — validated on 2 real user matches** |
 | 3b. Coach (LLM review + memory) | **done — validated** (counterfactuals, item prescription, farm critique, recurring-pattern memory across reviews) |
 | Validation (play games, run pipeline end-to-end) | **done 2026-05-15** |
@@ -231,5 +235,7 @@ $0 — runs locally. OpenDota free tier (~2,000 calls/day) is sufficient for per
 | 5d. Coach (per-hero/matchup memory, streaming output, patch tagging) | **done 2026-05-17** |
 | 5e. Model (per-bracket isotonic calibration, retrain trigger, hyperparam sweep) | **done 2026-05-17** |
 | 5f. Validation + ops (30 pytest cases, TROUBLESHOOTING.md) | **done 2026-05-17** |
+| 5g. Narrator surfaces (per-leak recommendations, Stanley-Parable blame, agentic chat with 7-tool harness) | **done 2026-05-22** |
+| 6. Open-source release (LICENSE, CONTRIBUTING, CoC, CI, demo bundle, issue/PR templates) | **done 2026-05-25** |
 
 See [docs/PLANNING.md](docs/PLANNING.md) for the full validation plan and future work.

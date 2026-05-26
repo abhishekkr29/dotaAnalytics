@@ -111,6 +111,52 @@ The Settings page validates via `client.models.list()` (a free call) before savi
 2. `max_tokens` cap hit — review truncated mid-sentence. Bump `max_tokens` in `coach.coach` (currently 3500).
 3. Anthropic API outage. Retry.
 
+## Narrator surfaces (per-leak, blame, chat)
+
+### Per-leak recommendation cites events *after* the leak ("they smoked at t+47s")
+
+**Cause:** A regression in `_build_per_leak_context()` (or a manual `context_window_seconds` widening) is leaking post-leak events into the prompt. The contract is **`[t-120s, t]` only** — Haiku will happily invent causal stories from any event it sees.
+
+**Fix:** Re-verify `test_recommend.py` passes. The post-leak-exclusion test is the load-bearing regression check.
+
+### Blame keeps picking the same hard support every game
+
+**Cause:** You're reading raw deaths, not the composite. The picker uses **role-normalized** z-scores (deaths vs role baseline, GPM vs role baseline, hero damage vs role baseline, tower damage vs role baseline) — a carry with 8 deaths beats a support with 12 deaths because the carry is +100% over baseline while the support is +20%.
+
+**Diagnose:** look at `result["target"]["blame_factors"]` in the assign_blame JSON output. The `composite` field shows the weighted z-score; the picker picks max.
+
+**Fix:** if the auto-pick is genuinely wrong for your context, override with `target_slot=<player_slot>` in `coach.assign_blame()`. The CLI doesn't expose this — drop into a Python shell or hit it from a notebook.
+
+### Blame includes me on a loss
+
+**Cause:** You passed `exclude_self=False`. The default is `True` on losses (toxic-community traditional).
+
+**Fix:** Remove the override.
+
+### Chat hits `tool_cap_hit: true` and replies truncate
+
+**Symptom:** Reply ends with "The narrator exceeded the data-gathering budget mid-thought."
+
+**Cause:** Hard cap of `CHAT_MAX_TOOL_TURNS = 6` Anthropic round-trips per user message — past that, the loop terminates regardless of whether the model has produced a final text block. Usually triggered by overly broad questions ("tell me everything about every enemy player").
+
+**Fix:** Ask a more specific question, or raise `CHAT_MAX_TOOL_TURNS` in `app/chat.py` (each extra roundtrip is one more Haiku call — ~$0.001 each). The cap is a cost guard, not a correctness invariant.
+
+### Chat references events from a different match
+
+**Cause:** Cross-match tools (`get_recurring_patterns`, `get_recent_matches`, `get_hero_history`) pull from coach memory + the user's parsed match cache. If the model surfaces a stat from one of those, it's not a hallucination — it's an other-match cite. Look at `result["tool_calls"]` to see which tool was called with what arguments.
+
+### Chat history grows unbounded on disk
+
+**Cause:** `data/chats/<aid>/<mid>.jsonl` is append-only. Only the last `CHAT_HISTORY_TURNS = 10` pairs are replayed to the model, but every turn ever sent is still on disk.
+
+**Fix:** `chat.clear_history(account_id, match_id)` from a Python shell, or `rm data/chats/<aid>/<mid>.jsonl` directly. The Analyzer-page expander has a 🗑️ button that calls `clear_history()`.
+
+### Chat costs spike (5×–10× a single coach call)
+
+**Cause:** Combination of (a) hitting the tool cap (`CHAT_MAX_TOOL_TURNS = 6` round-trips) and (b) repeated chat turns within a session. Each turn replays the last 10 pairs of history, so token cost grows with conversation depth.
+
+**Fix:** Clear history on irrelevant tangents. If a single user message routinely uses ≥4 tool roundtrips, narrow the question. Switch to Haiku-default explicitly if someone overrode the chat model upward.
+
 ## Model / training
 
 ### `analyze` complains about feature count mismatch
